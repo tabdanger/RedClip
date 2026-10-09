@@ -1,0 +1,84 @@
+# Builds Red Clip on one of GitHub's macOS machines (with Xcode 26) every time the code changes,
+# or when you tap "Run workflow" on the Actions tab. No Mac needed. Nothing is signed or uploaded
+# here (that's upload.yml): this just proves everything compiles.
+#
+# 1. The Swift Playgrounds package (RedClip.swiftpm), Release, exactly as on the iPad.
+# 2. The app + the AUv3 effect plug-in from the Xcode project (xcode/).
+name: Build Red Clip
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "RedClip.swiftpm/**"
+      - "AUv3/**"
+      - "xcode/**"
+      - ".github/workflows/build.yml"
+      - ".github/scripts/annotate.py"
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v5
+
+      - name: Use Xcode 26 (the same Xcode the App Store upload uses)
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          echo "::notice title=Xcode::$(xcodebuild -version | tr '\n' ' ')"
+
+      - name: Build the Swift Playgrounds app for iPad (Release, unsigned)
+        working-directory: RedClip.swiftpm
+        run: |
+          xcodebuild \
+            -scheme "Red Clip" \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd-release" \
+            CODE_SIGNING_ALLOWED=NO \
+            build > "$RUNNER_TEMP/build-release.log" 2>&1 || true
+          python3 "$GITHUB_WORKSPACE/.github/scripts/annotate.py" "$RUNNER_TEMP/build-release.log" "iPad app (Playgrounds package)"
+          grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/build-release.log"
+
+      - name: Make the Xcode project (app + AUv3 effect) with XcodeGen
+        run: |
+          brew install xcodegen > "$RUNNER_TEMP/brew.log" 2>&1 || { tail -20 "$RUNNER_TEMP/brew.log"; exit 1; }
+          python3 xcode/generate.py | tee -a "$GITHUB_ENV"
+          xcodegen generate --spec xcode/project.yml
+
+      - name: Build Red Clip + AUv3 from the Xcode project (Release, unsigned)
+        run: |
+          xcodebuild \
+            -project xcode/RedClip.xcodeproj \
+            -scheme RedClip \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd-xcode" \
+            MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
+            CODE_SIGNING_ALLOWED=NO \
+            build > "$RUNNER_TEMP/build-xcode.log" 2>&1 || true
+          python3 "$GITHUB_WORKSPACE/.github/scripts/annotate.py" "$RUNNER_TEMP/build-xcode.log" "Xcode build (app + AUv3)"
+          grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/build-xcode.log"
+          APP=$(find "$RUNNER_TEMP/dd-xcode/Build/Products" -maxdepth 2 -name "Red Clip.app" | head -1)
+          if [ ! -d "$APP/PlugIns/RedClipAU.appex" ]; then
+            echo "::error title=AUv3::The plug-in (PlugIns/RedClipAU.appex) is missing from the app."
+            exit 1
+          fi
+          echo "::notice title=AUv3::Red Clip.app built with the AUv3 effect inside."
+
+      - name: Keep the build logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-logs
+          path: ${{ runner.temp }}/build-*.log
+          retention-days: 14
+          if-no-files-found: ignore

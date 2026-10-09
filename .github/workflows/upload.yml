@@ -1,0 +1,399 @@
+# Builds Red Clip (app + AUv3 effect), signs it and uploads it to App Store Connect with altool, on one of GitHub's Macs.
+# No Mac needed. Runs only when started: Actions tab › "Upload Red Clip to App Store Connect" ›
+# Run workflow. Pick "check" to only test the API key and the App Store Connect setup.
+#
+# Repository secrets (Settings › Secrets and variables › Actions):
+#   ASC_KEY_ID      Key ID of an App Store Connect API key (Users and Access › Integrations › Team Keys)
+#   ASC_ISSUER_ID   Issuer ID shown above the list of team keys
+#   ASC_KEY_P8      The whole text of that key's AuthKey_XXXXXXXXXX.p8 file, BEGIN/END lines included
+#   APPLE_TEAM_ID   Your 10-character Team ID (developer.apple.com › Account › Membership details)
+# The key needs the Admin role: for each upload the workflow makes a temporary distribution
+# certificate and App Store profile through the API, and revokes / deletes them afterwards, so
+# no certificate files have to be kept anywhere.
+name: Upload Red Clip to App Store Connect
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "upload = build, sign, upload, then give it to the internal group and send it to the external (public) group · sign = build and sign, no upload · check = only test the API key and App Store Connect · status = show the latest builds · external = send a build to Beta App Review for the public TestFlight link · tester = add a tester to a TestFlight group"
+        type: choice
+        options: [upload, sign, check, status, external, tester]
+        default: upload
+      build_number:
+        description: "Build number (digits only; leave empty to pick one automatically / the latest valid build)"
+        required: false
+        default: ""
+      feedback_email:
+        description: "external: where testers' feedback goes"
+        required: false
+        default: ""
+      contact_first_name:
+        description: "external: Beta App Review contact, first name"
+        required: false
+        default: ""
+      contact_last_name:
+        description: "external: Beta App Review contact, last name"
+        required: false
+        default: ""
+      contact_phone:
+        description: "external: Beta App Review contact phone (with country code, like +1 415 555 0100)"
+        required: false
+        default: ""
+      contact_email:
+        description: "external: Beta App Review contact email"
+        required: false
+        default: ""
+      tester_email:
+        description: "tester: the tester's email (their Apple ID email)"
+        required: false
+        default: ""
+      tester_name:
+        description: "tester: first and last name"
+        required: false
+        default: ""
+      tester_group:
+        description: "tester: internal (App Store Connect team members, no review) or external"
+        type: choice
+        options: [internal, external]
+        default: internal
+
+concurrency:
+  group: upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    # Only building and signing need a Mac. The status, check and external modes just talk to
+    # App Store Connect, so they run on Linux, which uses a tenth of the Actions minutes.
+    runs-on: ${{ contains(fromJSON('["status", "check", "external", "tester"]'), inputs.mode) && 'ubuntu-latest' || 'macos-15' }}
+    timeout-minutes: 60
+    env:
+      BUNDLE_ID: com.tabdanger.redclip
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v5
+
+      - name: Use Xcode 26 (Apple only accepts apps built with the iOS 26 SDK or later)
+        if: runner.os == 'macOS'
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error title=Xcode::No Xcode 26 on this Mac. Installed:"; ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          echo "::notice title=Xcode::$(xcodebuild -version | tr '\n' ' ')"
+
+      - name: Check the secrets are set
+        env:
+          RAW_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          RAW_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          RAW_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          # Pasted secrets often carry a space or a line break at the end, which breaks Apple's
+          # sign-in. Use them trimmed, and say so (without showing the values).
+          ASC_KEY_ID=$(printf '%s' "$RAW_KEY_ID" | tr -d '[:space:]')
+          ASC_ISSUER_ID=$(printf '%s' "$RAW_ISSUER_ID" | tr -d '[:space:]')
+          APPLE_TEAM_ID=$(printf '%s' "$RAW_TEAM_ID" | tr -d '[:space:]')
+          [ "$ASC_KEY_ID" != "$RAW_KEY_ID" ] && echo "::warning title=ASC_KEY_ID::Had spaces or line breaks in it; using it without them."
+          [ "$ASC_ISSUER_ID" != "$RAW_ISSUER_ID" ] && echo "::warning title=ASC_ISSUER_ID::Had spaces or line breaks in it; using it without them."
+          [ "$APPLE_TEAM_ID" != "$RAW_TEAM_ID" ] && echo "::warning title=APPLE_TEAM_ID::Had spaces or line breaks in it; using it without them."
+          [ -n "$ASC_KEY_ID" ] && [ ${#ASC_KEY_ID} -ne 10 ] && echo "::warning title=ASC_KEY_ID::Is ${#ASC_KEY_ID} characters long; an App Store Connect key ID is 10."
+          [ -n "$ASC_ISSUER_ID" ] && [ ${#ASC_ISSUER_ID} -ne 36 ] && echo "::warning title=ASC_ISSUER_ID::Is ${#ASC_ISSUER_ID} characters long; an issuer ID is 36 (like 69a6de7e-....)."
+          [ -n "$APPLE_TEAM_ID" ] && [ ${#APPLE_TEAM_ID} -ne 10 ] && echo "::warning title=APPLE_TEAM_ID::Is ${#APPLE_TEAM_ID} characters long; a Team ID is 10."
+          for v in "$ASC_KEY_ID" "$ASC_ISSUER_ID" "$APPLE_TEAM_ID"; do [ -n "$v" ] && echo "::add-mask::$v"; done
+          {
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+          } >> "$GITHUB_ENV"
+          missing=""
+          [ -z "$ASC_KEY_ID" ] && missing="$missing ASC_KEY_ID"
+          [ -z "$ASC_ISSUER_ID" ] && missing="$missing ASC_ISSUER_ID"
+          [ -z "$ASC_KEY_P8" ] && missing="$missing ASC_KEY_P8"
+          [ -z "$APPLE_TEAM_ID" ] && missing="$missing APPLE_TEAM_ID"
+          if [ -n "$missing" ]; then
+            echo "::error title=Missing secrets::Add these in Settings › Secrets and variables › Actions:$missing"
+            exit 1
+          fi
+          case "$ASC_KEY_P8" in
+            *"BEGIN PRIVATE KEY"*) ;;
+            *) echo "::error title=ASC_KEY_P8::Paste the whole .p8 file, including the -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- lines"; exit 1 ;;
+          esac
+          echo "SIGNING=$RUNNER_TEMP/signing" >> "$GITHUB_ENV"
+
+      - name: Save the API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p "$SIGNING" ~/.appstoreconnect/private_keys
+          # Line endings normalised (a key pasted on some devices arrives with \r\n).
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$SIGNING/AuthKey.p8"
+          cp "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2>/dev/null; then
+            echo "::error title=ASC_KEY_P8::The saved .p8 text isn't a readable private key. Paste the whole file again, exactly as downloaded."
+            exit 1
+          fi
+          echo "ASC_KEY_PATH=$SIGNING/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Check App Store Connect (API key, app record, signing access)
+        env:
+          ALLOW_MISSING_APP: ${{ inputs.mode == 'sign' && '1' || '0' }}
+        run: python3 .github/scripts/asc.py check
+
+      - name: Latest builds and TestFlight status in App Store Connect
+        if: inputs.mode == 'status'
+        run: python3 .github/scripts/asc.py testflight
+
+      - name: External testing (test information, external group, Beta App Review)
+        if: inputs.mode == 'external'
+        env:
+          FEEDBACK_EMAIL: ${{ inputs.feedback_email }}
+          CONTACT_FIRST: ${{ inputs.contact_first_name }}
+          CONTACT_LAST: ${{ inputs.contact_last_name }}
+          CONTACT_PHONE: ${{ inputs.contact_phone }}
+          CONTACT_EMAIL: ${{ inputs.contact_email }}
+          BUILD_INPUT: ${{ inputs.build_number }}
+        run: python3 .github/scripts/asc.py external "$BUILD_INPUT"
+
+      - name: Add a tester to a TestFlight group
+        if: inputs.mode == 'tester'
+        env:
+          TESTER_EMAIL: ${{ inputs.tester_email }}
+          TESTER_NAME: ${{ inputs.tester_name }}
+          TESTER_GROUP: ${{ inputs.tester_group }}
+        run: python3 .github/scripts/asc.py tester "$TESTER_EMAIL" "$TESTER_NAME" "$TESTER_GROUP"
+
+      - name: Set the build number
+        if: inputs.mode == 'upload' || inputs.mode == 'sign'
+        working-directory: RedClip.swiftpm
+        env:
+          INPUT_BUILD: ${{ github.event.inputs.build_number }}
+        run: |
+          BASE=$(sed -n 's/.*bundleVersion: "\([0-9][0-9]*\)".*/\1/p' Package.swift)
+          VERSION=$(sed -n 's/.*displayVersion: "\([^"]*\)".*/\1/p' Package.swift)
+          case "$INPUT_BUILD" in
+            ''|*[!0-9]*)
+              if [ -n "$INPUT_BUILD" ]; then echo "::warning title=Build number::'$INPUT_BUILD' isn't a whole number, so it was ignored."; fi
+              BUILD=$((BASE + GITHUB_RUN_NUMBER)) ;;
+            *) BUILD="$INPUT_BUILD" ;;
+          esac
+          sed -i '' "s/bundleVersion: \"$BASE\"/bundleVersion: \"$BUILD\"/" Package.swift
+          grep -n 'bundleVersion\|displayVersion' Package.swift
+          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "::notice title=Version::Red Clip $VERSION (build $BUILD)"
+
+      - name: Make the Xcode project (app + AUv3 plug-in) with XcodeGen
+        if: inputs.mode == 'upload' || inputs.mode == 'sign'
+        env:
+          REDCLIP_BUILD: ${{ env.BUILD }}
+        run: |
+          brew install xcodegen > "$RUNNER_TEMP/brew.log" 2>&1 || { tail -20 "$RUNNER_TEMP/brew.log"; exit 1; }
+          python3 xcode/generate.py
+          xcodegen generate --spec xcode/project.yml
+
+      - name: Build Red Clip + AUv3 for the App Store (archive, signed in the next steps)
+        if: inputs.mode == 'upload' || inputs.mode == 'sign'
+        run: |
+          xcodebuild \
+            -project xcode/RedClip.xcodeproj \
+            -scheme RedClip \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/RedClip.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            archive > "$RUNNER_TEMP/archive.log" 2>&1 || true
+          python3 "$GITHUB_WORKSPACE/.github/scripts/annotate.py" "$RUNNER_TEMP/archive.log" "Archive"
+          if ! grep -q "ARCHIVE SUCCEEDED" "$RUNNER_TEMP/archive.log"; then tail -30 "$RUNNER_TEMP/archive.log"; exit 1; fi
+          APP=$(find "$RUNNER_TEMP/RedClip.xcarchive/Products" -maxdepth 3 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "::error title=Archive::No .app inside the archive"; exit 1; fi
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          /usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" -c "Print CFBundleShortVersionString" -c "Print CFBundleVersion" "$APP/Info.plist"
+
+      - name: Sign Red Clip with Apple's cloud signing (Xcode export)
+        if: inputs.mode == 'upload' || inputs.mode == 'sign'
+        run: |
+          # Xcode signs with a distribution certificate Apple keeps in the cloud: nothing to
+          # create, store or revoke on this side.
+          cat > "$SIGNING/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/RedClip.xcarchive" \
+            -exportOptionsPlist "$SIGNING/ExportOptions.plist" \
+            -exportPath "$SIGNING/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" > "$RUNNER_TEMP/export.log" 2>&1 || true
+          IPA_FILE=$(find "$SIGNING/export" -maxdepth 1 -name "*.ipa" 2>/dev/null | head -1)
+          if [ -n "$IPA_FILE" ]; then
+            echo "IPA=$IPA_FILE" >> "$GITHUB_ENV"
+            echo "::notice title=Signed::Red Clip $VERSION (build $BUILD) signed by Xcode with Apple's cloud signing ($(du -h "$IPA_FILE" | cut -f1))."
+          else
+            tail -25 "$RUNNER_TEMP/export.log"
+            grep -E "error:|Error" "$RUNNER_TEMP/export.log" | head -6 | while read -r l; do echo "::warning title=Cloud signing (falling back to an API certificate)::$l"; done
+          fi
+
+      - name: Make a signing certificate and App Store profile (App Store Connect API)
+        if: (inputs.mode == 'upload' || inputs.mode == 'sign') && env.IPA == ''
+        run: python3 .github/scripts/asc.py prepare "$SIGNING"
+
+      - name: Sign Red Clip with that certificate and pack the IPA
+        if: (inputs.mode == 'upload' || inputs.mode == 'sign') && env.IPA == ''
+        run: |
+          cd "$SIGNING"
+          # Certificate + key into a throwaway keychain.
+          /usr/bin/openssl x509 -inform DER -in signing.cer -out signing.pem
+          P12_PASSWORD=$(uuidgen)
+          /usr/bin/openssl pkcs12 -export -inkey signing.key -in signing.pem -out signing.p12 -passout pass:"$P12_PASSWORD"
+          KC="$SIGNING/upload.keychain-db"
+          KC_PASSWORD=$(uuidgen)
+          echo "KC=$KC" >> "$GITHUB_ENV"
+          security create-keychain -p "$KC_PASSWORD" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASSWORD" "$KC"
+          security import signing.p12 -k "$KC" -P "$P12_PASSWORD" -A -t cert -f pkcs12
+          if curl -sfL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o wwdr.cer; then security import wwdr.cer -k "$KC" || true; fi
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASSWORD" "$KC" > /dev/null
+          IDENTITY=$(/usr/bin/openssl x509 -in signing.pem -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')
+          security find-identity -v -p codesigning "$KC"
+
+          # Entitlements come from the profile.
+          security cms -D -i profile.mobileprovision > profile.plist
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' profile.plist > entitlements.plist
+          cat entitlements.plist
+
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          APPDIR="Payload/$(basename "$APP")"
+          cp profile.mobileprovision "$APPDIR/embedded.mobileprovision"
+          # Inside out: any embedded code first, then the plug-in (with its own profile and
+          # entitlements), then the app.
+          find "$APPDIR" -depth \( -name "*.framework" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' item; do
+            codesign --force --sign "$IDENTITY" --keychain "$KC" --timestamp=none "$item"
+          done
+          APPEX="$APPDIR/PlugIns/RedClipAU.appex"
+          if [ -d "$APPEX" ]; then
+            security cms -D -i plugin.mobileprovision > plugin-profile.plist
+            /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' plugin-profile.plist > plugin-entitlements.plist
+            cp plugin.mobileprovision "$APPEX/embedded.mobileprovision"
+            codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements plugin-entitlements.plist \
+              --generate-entitlement-der --timestamp=none "$APPEX"
+          fi
+          codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements entitlements.plist \
+            --generate-entitlement-der --timestamp=none "$APPDIR"
+          codesign --verify --deep --strict --verbose=2 "$APPDIR"
+          rm -f RedClip.ipa
+          zip -qry RedClip.ipa Payload
+          ls -la RedClip.ipa
+          echo "IPA=$SIGNING/RedClip.ipa" >> "$GITHUB_ENV"
+          echo "::notice title=Signed::Red Clip $VERSION (build $BUILD) built, signed with an API-made certificate and packed ($(du -h RedClip.ipa | cut -f1))."
+
+      - name: What's inside the app (privacy manifest, icons)
+        if: inputs.mode == 'upload' || inputs.mode == 'sign'
+        run: |
+          LIST=$(unzip -l "$IPA" | awk '{print $4}' | grep -E '^Payload/[^/]+\.app/[^/]+/?$' | sed 's#^Payload/[^/]*\.app/##' | tr '\n' ' ')
+          echo "::notice title=App bundle::$LIST"
+          if ! unzip -l "$IPA" | grep -q 'PlugIns/RedClipAU.appex/RedClipAU$'; then
+            echo "::error title=AUv3::PlugIns/RedClipAU.appex is missing from the signed app."
+            exit 1
+          fi
+          # The plug-in needs its own App Store profile and signature, or Apple rejects the upload.
+          rm -rf "$RUNNER_TEMP/ipa" && mkdir -p "$RUNNER_TEMP/ipa" && unzip -q "$IPA" -d "$RUNNER_TEMP/ipa"
+          APPEX=$(find "$RUNNER_TEMP/ipa/Payload" -maxdepth 3 -name "RedClipAU.appex" | head -1)
+          if [ ! -f "$APPEX/embedded.mobileprovision" ] || ! codesign --verify --strict "$APPEX"; then
+            echo "::error title=AUv3::The plug-in inside the app isn't signed with its own App Store profile."
+            exit 1
+          fi
+          PROFILE_APP=$(security cms -D -i "$APPEX/embedded.mobileprovision" | plutil -extract Entitlements.application-identifier raw -o - - 2>/dev/null || true)
+          echo "::notice title=AUv3::The Red Clip plug-in is inside the signed app, signed with its own App Store profile ($PROFILE_APP)."
+          if unzip -l "$IPA" | grep -qE 'Payload/[^/]+\.app/PrivacyInfo\.xcprivacy$'; then
+            echo "::notice title=Privacy manifest::PrivacyInfo.xcprivacy is at the top of the app, where Apple looks for it."
+          else
+            echo "::warning title=Privacy manifest::PrivacyInfo.xcprivacy is not at the top of the app: $(unzip -l "$IPA" | awk '{print $4}' | grep PrivacyInfo | tr '\n' ' ')"
+          fi
+
+      - name: Upload with altool (Transporter if altool is missing)
+        if: inputs.mode == 'upload'
+        run: |
+          cd "$SIGNING"
+          if xcrun --find altool > /dev/null 2>&1; then
+            TOOL="altool"
+            echo "== validate"
+            VALID=0
+            xcrun altool --validate-app --type ios --file "$IPA" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" > validate.log 2>&1 || VALID=$?
+            cat validate.log
+            if [ "$VALID" -ne 0 ]; then
+              grep -iE "error|fail|invalid|missing" validate.log | head -12 | while read -r l; do echo "::error title=Validate (altool)::$l"; done
+              exit 1
+            fi
+            echo "== upload"
+            STATUS=0
+            xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" > upload.log 2>&1 || STATUS=$?
+          elif xcrun --find iTMSTransporter > /dev/null 2>&1; then
+            TOOL="Transporter"
+            STATUS=0
+            xcrun iTMSTransporter -m upload -assetFile "$IPA" -apiKey "$ASC_KEY_ID" -apiIssuer "$ASC_ISSUER_ID" -v informational > upload.log 2>&1 || STATUS=$?
+          else
+            echo "::error title=Upload::Neither altool nor iTMSTransporter is on this Mac."
+            exit 1
+          fi
+          cat upload.log
+          if [ "$STATUS" -eq 0 ] && ! grep -qiE "^\*\*\* error|upload failed" upload.log; then
+            echo "::notice title=Uploaded::Red Clip $VERSION (build $BUILD) was uploaded with $TOOL."
+          else
+            grep -iE "error|fail" upload.log | head -12 | while read -r l; do echo "::error title=Upload ($TOOL)::$l"; done
+            exit 1
+          fi
+
+      - name: Wait for Apple to process the build, then give it to the internal testers
+        if: inputs.mode == 'upload'
+        run: python3 .github/scripts/asc.py wait "$BUILD"
+
+      # Also sends the build to the external (public) group, like MS26: adds it with the What to
+      # Test notes and sends it to Beta App Review, reusing the saved feedback email and contact.
+      - name: Send the build to the external group (Beta App Review for the public link)
+        if: inputs.mode == 'upload'
+        # The upload itself already worked by now; until "external" mode has been run once to save
+        # the feedback email and review contact, this step can't finish and shouldn't fail the run.
+        continue-on-error: true
+        run: python3 .github/scripts/asc.py external "$BUILD"
+
+      - name: Clean up
+        if: always()
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          # An uploaded build keeps its certificate: revoking it while Apple still checks the build
+          # can make the build invalid. A test signing (mode "sign") cleans up after itself.
+          if [ "$MODE" = "sign" ] && [ -n "$ASC_KEY_PATH" ] && [ -f "$ASC_KEY_PATH" ]; then python3 .github/scripts/asc.py cleanup "$SIGNING" || true; fi
+          if [ -n "$KC" ]; then security delete-keychain "$KC" || true; fi
+          rm -rf "$SIGNING" ~/.appstoreconnect/private_keys
+
+      - name: Keep the build log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: upload-logs
+          path: ${{ runner.temp }}/archive.log
+          retention-days: 14
+          if-no-files-found: ignore
