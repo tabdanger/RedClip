@@ -193,17 +193,21 @@ struct Knob: View {
 
     private var ticks: some View {
         Canvas { g, size in
-            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            let cx: CGFloat = size.width / 2
+            let cy: CGFloat = size.height / 2
             let count = 25
             for i in 0..<count {
-                let f = Double(i) / Double(count - 1)
-                let a = (-135 + 270 * f - 90) * Double.pi / 180
+                let f = CGFloat(i) / CGFloat(count - 1)
+                let degrees: CGFloat = -225 + 270 * f
+                let a: CGFloat = degrees * .pi / 180
+                let ca: CGFloat = cos(a)
+                let sa: CGFloat = sin(a)
                 let major = i % 3 == 0
-                let r1 = size.width * (major ? 0.445 : 0.455)
-                let r2 = size.width * 0.495
+                let r1: CGFloat = size.width * (major ? 0.445 : 0.455)
+                let r2: CGFloat = size.width * 0.495
                 var p = Path()
-                p.move(to: CGPoint(x: c.x + r1 * cos(a), y: c.y + r1 * sin(a)))
-                p.addLine(to: CGPoint(x: c.x + r2 * cos(a), y: c.y + r2 * sin(a)))
+                p.move(to: CGPoint(x: cx + r1 * ca, y: cy + r1 * sa))
+                p.addLine(to: CGPoint(x: cx + r2 * ca, y: cy + r2 * sa))
                 g.stroke(p, with: .color(Theme.text.opacity(major ? 0.9 : 0.6)), lineWidth: major ? 2.2 : 1.4)
             }
         }

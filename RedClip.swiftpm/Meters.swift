@@ -135,9 +135,9 @@ struct LEDMeter: View {
                 if top && over { lit = 1 }
                 if lit > 0 {
                     var glow = ctx
-                    glow.addFilter(.shadow(color: Theme.glow.opacity(0.75 * lit), radius: 4))
+                    glow.addFilter(.shadow(color: Theme.glow.opacity(Double(0.75 * lit)), radius: 4))
                     let c = top ? (over ? Color.white : Theme.glowSoft) : Theme.glow
-                    glow.fill(shape, with: .color(c.opacity(0.25 + 0.75 * lit)))
+                    glow.fill(shape, with: .color(c.opacity(Double(0.25 + 0.75 * lit))))
                 }
             }
         }
