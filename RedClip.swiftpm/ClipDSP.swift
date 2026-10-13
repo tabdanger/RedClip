@@ -13,11 +13,11 @@ enum Param: Int, CaseIterable {
         switch self {
         case .inputDB, .outputDB: return -12...12
         case .driveDB: return 0...12
-        case .ceilingDB: return -3...0
+        case .ceilingDB: return -12...0
         case .mix, .gold, .alchemy: return 0...100
-        case .clipMode: return 0...2        // 0 Soft, 1 Firm, 2 Hard
+        case .clipMode: return 0...2        // 0 Hard, 1 Classic (soft knee), 2 Modern (medium knee)
         case .oversampling: return 0...2   // 1x, 2x, 4x
-        case .goldMode: return 0...1        // 0 Modern, 1 Classic
+        case .goldMode: return 0...1        // 0 Modern (up to +2.5 dB), 1 Classic (up to +6 dB)
         case .boxTone: return 0...2         // 0 Flat, 1 Modern, 2 Classic
         case .link, .bypass, .unity, .delta: return 0...1
         }
@@ -27,7 +27,7 @@ enum Param: Int, CaseIterable {
         switch self {
         case .ceilingDB: return -0.3
         case .mix: return 100
-        case .clipMode: return 1
+        case .clipMode: return 2
         case .oversampling: return 1
         default: return 0
         }
@@ -35,8 +35,10 @@ enum Param: Int, CaseIterable {
 }
 
 enum Meter: Int {
+    // inLUFS / outLUFS are short-term (3 s); M = momentary (400 ms), I = integrated (gated, since reset)
     case inPeakL, inPeakR, outPeakL, outPeakR, inLUFS, outLUFS, clip, reductionDB
-    static let count = 8
+    case inLUFSM, outLUFSM, inLUFSI, outLUFSI
+    static let count = 12
 }
 
 /// Memory shared between the audio thread and the UI. Allocated once, never resized.
@@ -50,14 +52,14 @@ final class SharedState: @unchecked Sendable {
     let waveOut: UnsafeMutablePointer<Float>   // output level per column
     let waveWrite: UnsafeMutablePointer<Int>   // next column to write
     let power: UnsafeMutablePointer<Int32>     // 0 = power button off (plug-in passes audio through untouched)
+    let loudnessReset: UnsafeMutablePointer<Int32>  // UI sets 1 to restart the integrated LUFS readings
 
     init() {
         params = .allocate(capacity: Param.allCases.count)
         for p in Param.allCases { params[p.rawValue] = p.defaultValue }
         meters = .allocate(capacity: Meter.count)
         meters.initialize(repeating: 0, count: Meter.count)
-        meters[Meter.inLUFS.rawValue] = -70
-        meters[Meter.outLUFS.rawValue] = -70
+        for m in [Meter.inLUFS, .outLUFS, .inLUFSM, .outLUFSM, .inLUFSI, .outLUFSI] { meters[m.rawValue] = -70 }
         waveIn = .allocate(capacity: SharedState.waveColumns)
         waveIn.initialize(repeating: 0, count: SharedState.waveColumns)
         waveOut = .allocate(capacity: SharedState.waveColumns)
@@ -66,11 +68,13 @@ final class SharedState: @unchecked Sendable {
         waveWrite.initialize(to: 0)
         power = .allocate(capacity: 1)
         power.initialize(to: 1)
+        loudnessReset = .allocate(capacity: 1)
+        loudnessReset.initialize(to: 0)
     }
 
     deinit {
         params.deallocate(); meters.deallocate()
-        waveIn.deallocate(); waveOut.deallocate(); waveWrite.deallocate(); power.deallocate()
+        waveIn.deallocate(); waveOut.deallocate(); waveWrite.deallocate(); power.deallocate(); loudnessReset.deallocate()
     }
 
     subscript(p: Param) -> Float {
@@ -162,8 +166,8 @@ private let ellipticSOS: [Biquad] = [
 // MARK: - Shaping curves (also used by the UI transfer display)
 
 enum Curves {
-    /// Knee fraction per clip mode: Soft (Gold Clip "Modern"), Firm ("Classic"), Hard.
-    static func knee(_ mode: Int) -> Float { mode == 0 ? 0.35 : (mode == 1 ? 0.15 : 0) }
+    /// Knee fraction per clip style: 0 Hard (no knee), 1 Classic (soft knee), 2 Modern (medium knee).
+    static func knee(_ mode: Int) -> Float { mode == 1 ? 0.35 : (mode == 2 ? 0.15 : 0) }
 
     /// Clipper: unity below the knee, tanh rounding into the ceiling, never above it.
     @inline(__always) static func clip(_ x: Float, ceiling c: Float, knee: Float) -> Float {
@@ -178,15 +182,119 @@ enum Curves {
         return x < 0 ? -y : y
     }
 
-    /// Gold: a sample-by-sample density curve. Lifts the body of the signal while samples
-    /// already at the ceiling stay put, so peaks and transients are left alone.
-    /// Monotonic for the amounts used, so it never pushes past the ceiling.
-    @inline(__always) static func gold(_ x: Float, ceiling c: Float, amount: Float, classic: Bool) -> Float {
-        if amount <= 0 { return x }
-        let u = min(abs(x) / c, 1)
-        let lift: Float = classic ? amount * (1 - u) : amount * (1 - u) * (1 - u)
-        let y = min(u * (1 + lift), 1) * c
+    /// Most gain each Gold style adds at 100 %: Modern 2.5 dB, Classic 6 dB.
+    static func goldMaxDB(classic: Bool) -> Float { classic ? 6 : 2.5 }
+
+    /// Gold, modelled on Lavry Gold soft saturation. For G dB of Gold (relative to the ceiling):
+    /// untouched below -2G dB, peaks above that rounded off progressively (tape-like, no time
+    /// constants) so they never pass -G dB, then G dB of make-up gain lifts everything back so
+    /// the peaks land on the ceiling. Lavry's +6 dB mode is exactly this with G = 6 (threshold
+    /// -12 dBFS, peaks held under -6 dBFS). Returns the saturated sample BEFORE make-up gain.
+    @inline(__always) static func goldSaturate(_ x: Float, threshold t: Float, limit l: Float) -> Float {
+        let a = abs(x)
+        if a <= t { return x }
+        let r = l - t
+        let y = t + r * tanh((a - t) / r)
         return x < 0 ? -y : y
+    }
+
+    /// The whole Gold stage as the UI's transfer display would draw it.
+    static func gold(_ x: Float, ceiling c: Float, amount: Float, classic: Bool, unity: Bool) -> Float {
+        let g = amount * goldMaxDB(classic: classic)
+        guard g > 0.01 else { return x }
+        let y = goldSaturate(x, threshold: c * dbToGain(-2 * g), limit: c * dbToGain(-g))
+        return unity ? y : y * dbToGain(g)
+    }
+}
+
+/// BS.1770-4 / EBU R128 loudness for one signal (stereo summed): momentary (400 ms), short-term
+/// (3 s) and integrated (absolute -70 LUFS gate + relative -10 LU gate, 0.1 LU histogram).
+/// All memory is allocated in init; `addBlock` runs on the audio thread.
+final class LoudnessMeter {
+    private let ring = UnsafeMutablePointer<Double>.allocate(capacity: 30)
+    private var ringPos = 0
+    private var filled = 0
+    private static let bins = 1000          // -70 ... +30 LUFS in 0.1 LU steps
+    private let hist = UnsafeMutablePointer<Int32>.allocate(capacity: LoudnessMeter.bins)
+    private let histE = UnsafeMutablePointer<Double>.allocate(capacity: LoudnessMeter.bins)  // exact energy per bin
+    private(set) var momentary: Float = -70
+    private(set) var shortTerm: Float = -70
+    private(set) var integrated: Float = -70
+
+    init() {
+        ring.initialize(repeating: 0, count: 30)
+        hist.initialize(repeating: 0, count: LoudnessMeter.bins)
+        histE.initialize(repeating: 0, count: LoudnessMeter.bins)
+    }
+    deinit { ring.deallocate(); hist.deallocate(); histE.deallocate() }
+
+    func reset() {
+        for i in 0..<30 { ring[i] = 0 }
+        for i in 0..<LoudnessMeter.bins { hist[i] = 0; histE[i] = 0 }
+        ringPos = 0; filled = 0
+        momentary = -70; shortTerm = -70; integrated = -70
+    }
+
+    @inline(__always) static func lufs(_ energy: Double) -> Float {
+        energy > 1e-12 ? Float(-0.691 + 10 * log10(energy)) : -70
+    }
+
+    /// One 100 ms block: the mean square of each K-weighted channel, summed over channels.
+    func addBlock(_ energy: Double) {
+        ring[ringPos] = energy
+        ringPos = (ringPos + 1) % 30
+        filled = min(filled + 1, 30)
+
+        var m: Double = 0
+        let mCount = min(filled, 4)
+        for i in 1...mCount { m += ring[(ringPos - i + 30) % 30] }
+        m /= Double(mCount)
+        var st: Double = 0
+        for i in 1...filled { st += ring[(ringPos - i + 30) % 30] }
+        st /= Double(filled)
+        momentary = max(-70, Self.lufs(m))
+        shortTerm = max(-70, Self.lufs(st))
+
+        // Integrated: every 100 ms step closes a 400 ms gating block (75 % overlap)
+        guard filled >= 4 else { return }
+        let blockLUFS = Self.lufs(m)
+        if blockLUFS > -70 {
+            let bin = min(max(Int((blockLUFS + 70) * 10), 0), LoudnessMeter.bins - 1)
+            hist[bin] &+= 1
+            histE[bin] += m
+        }
+        var sumE: Double = 0, n: Double = 0
+        for b in 0..<LoudnessMeter.bins where hist[b] > 0 {
+            sumE += histE[b]; n += Double(hist[b])
+        }
+        guard n > 0 else { integrated = -70; return }
+        let relative = Self.lufs(sumE / n) - 10
+        let first = min(max(Int((relative + 70) * 10), 0), LoudnessMeter.bins - 1)
+        sumE = 0; n = 0
+        for b in first..<LoudnessMeter.bins where hist[b] > 0 {
+            sumE += histE[b]; n += Double(hist[b])
+        }
+        integrated = n > 0 ? max(-70, Self.lufs(sumE / n)) : -70
+    }
+}
+
+/// Exact BS.1770-4 K-weighting coefficients for any sample rate (same derivation as libebur128).
+enum KWeighting {
+    static func preFilter(fs: Double) -> Biquad {
+        let f0 = 1681.974450955533, g = 3.999843853973347, q = 0.7071752369554196
+        let k = tan(Double.pi * f0 / fs)
+        let vh = pow(10, g / 20), vb = pow(vh, 0.4996667741545416)
+        let a0 = 1 + k / q + k * k
+        return Biquad(b0: Float((vh + vb * k / q + k * k) / a0), b1: Float(2 * (k * k - vh) / a0),
+                      b2: Float((vh - vb * k / q + k * k) / a0),
+                      a1: Float(2 * (k * k - 1) / a0), a2: Float((1 - k / q + k * k) / a0))
+    }
+
+    static func rlb(fs: Double) -> Biquad {
+        let f0 = 38.13547087602444, q = 0.5003270373238773
+        let k = tan(Double.pi * f0 / fs)
+        let a0 = 1 + k / q + k * k
+        return Biquad(b0: 1, b1: -2, b2: 1, a1: Float(2 * (k * k - 1) / a0), a2: Float((1 - k / q + k * k) / a0))
     }
 }
 
@@ -231,20 +339,20 @@ final class ClipDSP: @unchecked Sendable {
     // smoothed controls
     private var sIn: Float = 1, sDrive: Float = 1, sOut: Float = 1, sMix: Float = 1
     private var sCeil: Float = 1, sGold: Float = 0, sAlch: Float = 0, sBypass: Float = 0
-    private var sComp: Float = 1
+    private var sUnity: Float = 0
     private let smooth: Float
-    private let unityK: Float
 
-    // unity-gain loudness tracking
-    private var msIn: Float = 0, msWet: Float = 0
+    // Gold (per base-rate sample, shared by both channels and every oversampled sub-sample)
+    private var goldOn = false
+    private var goldT: Float = 1, goldL: Float = 1, goldMakeup: Float = 1
+    private var clipOver: Float = 1   // largest (signal into clipper / ceiling) this block
 
-    // loudness (BS.1770-style short-term, 3 s of 100 ms blocks)
+    // loudness: 100 ms blocks, K-weighted, double-precision sums
     private let lufsBlock: Int
     private var lufsCount = 0
-    private var accIn: Float = 0, accOut: Float = 0
-    private let ringIn = UnsafeMutablePointer<Float>.allocate(capacity: 30)
-    private let ringOut = UnsafeMutablePointer<Float>.allocate(capacity: 30)
-    private var ringPos = 0
+    private var accIn: Double = 0, accOut: Double = 0
+    private let loudIn = LoudnessMeter()
+    private let loudOut = LoudnessMeter()
 
     // waveform columns
     private let colSamples: Int
@@ -255,11 +363,8 @@ final class ClipDSP: @unchecked Sendable {
         self.sampleRate = sampleRate
         self.shared = shared
         smooth = 1 - Float(exp(-1 / (0.015 * sampleRate)))
-        unityK = 1 - Float(exp(-1 / (1.5 * sampleRate)))
-        lufsBlock = max(1, Int(sampleRate / 10))
+        lufsBlock = max(1, Int((sampleRate / 10).rounded()))
         colSamples = max(1, Int(sampleRate / 50))
-        ringIn.initialize(repeating: 0, count: 30)
-        ringOut.initialize(repeating: 0, count: 30)
 
         var a: [Float] = []
         for (i, factor) in [1, 2, 4, 8].enumerated() {
@@ -271,9 +376,9 @@ final class ClipDSP: @unchecked Sendable {
         }
         alchCoef = (a[0], a[1], a[2], a[3])
 
-        // K-weighting (pre-filter shelf + RLB high-pass)
-        let shelf = Biquad.highShelf(fs: sampleRate, f: 1681.97, gainDB: 3.9998, q: 0.7071)
-        let rlb = Biquad.highpass(fs: sampleRate, f: 38.135, q: 0.5003)
+        // K-weighting (BS.1770-4 pre-filter + RLB high-pass), exact for this sample rate
+        let shelf = KWeighting.preFilter(fs: sampleRate)
+        let rlb = KWeighting.rlb(fs: sampleRate)
         for c in ch { c.kIn1 = shelf; c.kIn2 = rlb; c.kOut1 = shelf; c.kOut2 = rlb }
 
         let p = shared.params
@@ -282,7 +387,7 @@ final class ClipDSP: @unchecked Sendable {
         sCeil = dbToGain(p[Param.ceilingDB.rawValue])
     }
 
-    deinit { osCoeffs.deallocate(); ringIn.deallocate(); ringOut.deallocate() }
+    deinit { osCoeffs.deallocate() }
 
     private func configureOversampling(_ idx: Int) {
         curOS = idx
@@ -333,14 +438,19 @@ final class ClipDSP: @unchecked Sendable {
         let tDrive = dbToGain(p[Param.driveDB.rawValue])
         let tOut = dbToGain(p[Param.outputDB.rawValue])
         let tCeil = dbToGain(p[Param.ceilingDB.rawValue])
-        let tGold = p[Param.gold.rawValue] / 100
+        let tGold = p[Param.gold.rawValue] / 100 * Curves.goldMaxDB(classic: goldClassic)   // in dB
+        let tUnity: Float = unity ? 1 : 0
         let tAlch = p[Param.alchemy.rawValue] / 100
         let tMix = p[Param.mix.rawValue] / 100
         let tBypass: Float = p[Param.bypass.rawValue] > 0.5 ? 1 : 0
 
+        if shared.loudnessReset.pointee != 0 {
+            shared.loudnessReset.pointee = 0
+            loudIn.reset(); loudOut.reset()
+        }
+
         var inPeak: (Float, Float) = (0, 0), outPeak: (Float, Float) = (0, 0)
-        var clipped = false
-        var maxOver: Float = 1
+        clipOver = 1
         let k = smooth
 
         for n in 0..<frames {
@@ -348,9 +458,17 @@ final class ClipDSP: @unchecked Sendable {
             sDrive += k * (tDrive - sDrive); sMix += k * (tMix - sMix)
             sCeil += k * (tCeil - sCeil); sGold += k * (tGold - sGold)
             sAlch += k * (tAlch - sAlch); sBypass += k * (tBypass - sBypass)
+            sUnity += k * (tUnity - sUnity)
             let c = sCeil
 
-            var sqIn: Float = 0, sqWet: Float = 0
+            // Gold for this sample: threshold -2G, peak limit -G (re ceiling), make-up +G unless Unity
+            goldOn = sGold > 0.01
+            if goldOn {
+                goldT = c * dbToGain(-2 * sGold)
+                goldL = c * dbToGain(-sGold)
+                goldMakeup = dbToGain(sGold * (1 - sUnity))
+            }
+
             var kIn: Float = 0, kOut: Float = 0
             var colInMax: Float = 0, colOutMax: Float = 0
 
@@ -363,7 +481,6 @@ final class ClipDSP: @unchecked Sendable {
                 let xd = x * sDrive               // drive pushes into the clipper only
                 let ad = abs(xd)
                 colInMax = max(colInMax, ad)
-                if ad > c { clipped = true; maxOver = max(maxOver, ad / c) }
 
                 // --- oversampled nonlinear section ---
                 var wet: Float = 0, ref: Float = 0
@@ -375,7 +492,6 @@ final class ClipDSP: @unchecked Sendable {
                         var u: Float = j == 0 ? xd * fFactor : 0
                         var r: Float = j == 0 ? x * fFactor : 0
                         for i in 0..<maxStages { u = s.upW[i].process(u); r = s.upR[i].process(r) }
-                        if abs(u) > c { maxOver = max(maxOver, abs(u) / c) }
                         var w = shape(u, s, c, knee, goldClassic, aCoef)
                         for i in 0..<maxStages { w = s.dnW[i].process(w); r = s.dnR[i].process(r) }
                         if j == 0 { wet = w; ref = r }
@@ -388,14 +504,11 @@ final class ClipDSP: @unchecked Sendable {
                 // anti-overshoot: filter ringing after downsampling can't poke past the ceiling
                 wet = min(max(wet, -c), c)
 
-                sqIn += ref * ref
-                sqWet += wet * wet
-
                 var out: Float
                 if delta {
                     out = (wet - ref * sDrive) * sOut      // only what the clipper changed
                 } else {
-                    out = (wet * sComp * sMix + ref * (1 - sMix)) * sOut
+                    out = (wet * sMix + ref * (1 - sMix)) * sOut
                 }
                 out = out + sBypass * (raw - out)
 
@@ -408,23 +521,19 @@ final class ClipDSP: @unchecked Sendable {
                 let ko = s.kOut2.process(s.kOut1.process(out)); kOut += ko * ko
             }
 
-            // Unity gain: match wet loudness to the input loudness
-            msIn += unityK * (sqIn - msIn)
-            msWet += unityK * (sqWet - msWet)
-            let compTarget: Float = unity && msWet > 1e-10 ? min(max(sqrt(msIn / msWet), 0.1), 2) : 1
-            sComp += k * 0.05 * (compTarget - sComp)
-
-            // loudness blocks
-            accIn += kIn; accOut += kOut
+            // loudness: 100 ms blocks into the BS.1770 meters
+            accIn += Double(kIn); accOut += Double(kOut)
             lufsCount += 1
             if lufsCount >= lufsBlock {
-                ringIn[ringPos] = accIn / Float(lufsCount)
-                ringOut[ringPos] = accOut / Float(lufsCount)
-                ringPos = (ringPos + 1) % 30
-                var si: Float = 0, so: Float = 0
-                for i in 0..<30 { si += ringIn[i]; so += ringOut[i] }
-                shared.meters[Meter.inLUFS.rawValue] = max(-70, -0.691 + 10 * log10(max(si / 30, 1e-12)))
-                shared.meters[Meter.outLUFS.rawValue] = max(-70, -0.691 + 10 * log10(max(so / 30, 1e-12)))
+                loudIn.addBlock(accIn / Double(lufsCount))
+                loudOut.addBlock(accOut / Double(lufsCount))
+                let m = shared.meters
+                m[Meter.inLUFSM.rawValue] = loudIn.momentary
+                m[Meter.inLUFS.rawValue] = loudIn.shortTerm
+                m[Meter.inLUFSI.rawValue] = loudIn.integrated
+                m[Meter.outLUFSM.rawValue] = loudOut.momentary
+                m[Meter.outLUFS.rawValue] = loudOut.shortTerm
+                m[Meter.outLUFSI.rawValue] = loudOut.integrated
                 accIn = 0; accOut = 0; lufsCount = 0
             }
 
@@ -446,15 +555,18 @@ final class ClipDSP: @unchecked Sendable {
         m[Meter.inPeakR.rawValue] = max(m[Meter.inPeakR.rawValue], inPeak.1)
         m[Meter.outPeakL.rawValue] = max(m[Meter.outPeakL.rawValue], outPeak.0)
         m[Meter.outPeakR.rawValue] = max(m[Meter.outPeakR.rawValue], outPeak.1)
-        if clipped { m[Meter.clip.rawValue] = 1 }
-        m[Meter.reductionDB.rawValue] = max(m[Meter.reductionDB.rawValue], gainToDB(maxOver))
+        if clipOver > 1 { m[Meter.clip.rawValue] = 1 }
+        m[Meter.reductionDB.rawValue] = max(m[Meter.reductionDB.rawValue], gainToDB(clipOver))
     }
 
-    /// Clipper -> Gold -> Alchemy, run at the oversampled rate.
+    /// Gold (Lavry-style soft saturation + make-up) -> clipper -> Alchemy, at the oversampled rate.
     @inline(__always) private func shape(_ x: Float, _ s: Channel, _ c: Float, _ knee: Float,
                                          _ goldClassic: Bool, _ aCoef: Float) -> Float {
-        var y = Curves.clip(x, ceiling: c, knee: knee)
-        y = Curves.gold(y, ceiling: c, amount: sGold, classic: goldClassic)
+        var y = x
+        if goldOn { y = Curves.goldSaturate(y, threshold: goldT, limit: goldL) * goldMakeup }
+        let a = abs(y)
+        if a > c { clipOver = max(clipOver, a / c) }     // CLIP readout: how far past the ceiling
+        y = Curves.clip(y, ceiling: c, knee: knee)
 
         // Alchemy: amplitude-dependent tilt around 4 kHz. Near the ceiling the highs dip up to
         // about 1 dB and the lows lift slightly, softening the edge clipping leaves behind.
@@ -473,7 +585,7 @@ final class ClipDSP: @unchecked Sendable {
         for c in ch {
             c.kIn1.reset(); c.kIn2.reset(); c.kOut1.reset(); c.kOut2.reset()
         }
-        msIn = 0; msWet = 0; sComp = 1
+        loudIn.reset(); loudOut.reset()
     }
 }
 

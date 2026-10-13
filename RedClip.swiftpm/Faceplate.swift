@@ -130,7 +130,7 @@ struct FaceplateView: View {
         HStack(spacing: 0) {
             knob("Input", .inputDB, "-12", "+12", Fmt.db)
             knob("Drive", .driveDB, "0", "12", Fmt.dbPlain)
-            knob("Ceiling", .ceilingDB, "-3", "0", Fmt.dbPlain)
+            knob("Ceiling", .ceilingDB, "-12", "0", Fmt.dbPlain)
             knob("Mix", .mix, "0", "100", Fmt.pct)
             knob("Output", .outputDB, "-12", "+12", Fmt.db)
         }
@@ -194,7 +194,7 @@ struct FaceplateView: View {
         HStack(spacing: 0) {
             VStack(spacing: 14) {
                 Theme.label("Clip Mode", size: 18)
-                Segments(options: ["Soft", "Firm", "Hard"], selection: params.binding(.clipMode))
+                Segments(options: ["Hard", "Classic", "Modern"], selection: params.binding(.clipMode))
                     .frame(width: 390)
             }
             .frame(width: 470)

@@ -59,7 +59,7 @@ extension Param {
     /// Names for stepped controls, nil for continuous ones.
     var valueNames: [String]? {
         switch self {
-        case .clipMode: return ["Soft", "Firm", "Hard"]
+        case .clipMode: return ["Hard", "Classic", "Modern"]
         case .oversampling: return ["1x", "2x", "4x"]
         case .goldMode: return ["Modern", "Classic"]
         case .boxTone: return ["Flat", "Modern", "Classic"]
