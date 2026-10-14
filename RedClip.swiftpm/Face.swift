@@ -9,9 +9,16 @@ final class FaceModel: ObservableObject {
     let isPlugin: Bool
 
     @Published private(set) var isPowered = true
-    /// The "?" help mode and the control whose explanation is showing.
-    @Published var helpMode = false
-    @Published var helpTopic: HelpTopic?
+    /// The "?" help switch (remembered between launches) and the control whose bubble is showing.
+    private static let helpKey = "RedClip.HelpBubbles"
+    @Published var helpEnabled: Bool = UserDefaults.standard.bool(forKey: FaceModel.helpKey) {
+        didSet {
+            UserDefaults.standard.set(helpEnabled, forKey: Self.helpKey)
+            if !helpEnabled { helpTopic = nil }
+        }
+    }
+    @Published private(set) var helpTopic: HelpTopic?
+    private var helpHide: DispatchWorkItem?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?
 
@@ -31,6 +38,28 @@ final class FaceModel: ObservableObject {
     }
 
     func togglePower() { setPowered(!isPowered) }
+
+    /// Shows a control's bubble (only while help is switched on); it fades after 6 seconds.
+    func showHelp(_ topic: HelpTopic) {
+        guard helpEnabled else { return }
+        if helpTopic != topic { helpTopic = topic }
+        scheduleHelpHide(topic, after: 6)
+    }
+
+    /// The pointer left a control: keep the bubble a moment so it can still be read.
+    func hoverEnded(_ topic: HelpTopic) {
+        guard helpTopic == topic else { return }
+        scheduleHelpHide(topic, after: 1.5)
+    }
+
+    private func scheduleHelpHide(_ topic: HelpTopic, after seconds: Double) {
+        helpHide?.cancel()
+        let hide = DispatchWorkItem { [weak self] in
+            if self?.helpTopic == topic { self?.helpTopic = nil }
+        }
+        helpHide = hide
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: hide)
+    }
 }
 
 // MARK: - Names and units for the host (Logic shows these in automation lanes)

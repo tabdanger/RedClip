@@ -2,9 +2,10 @@ import SwiftUI
 
 // MARK: - Help: the "?" button next to Undo
 //
-// Tap "?" to turn help on. Every control then gets a dashed outline; tap it (or hover over it
-// with a trackpad, mouse or Apple Pencil) and a bubble explains what it does. While help is on,
-// taps only show help, so nothing gets changed by accident. Tap "?" again to turn it off.
+// Works the same as Console E's "?" key: it switches help bubbles on and off (remembered between
+// launches). With help on, every control still works normally, and touching it, or hovering over
+// it with a trackpad, mouse or Apple Pencil, pops up a small bubble beside it explaining what it
+// does. The bubble fades after a few seconds. Meters and readouts show theirs when touched.
 
 enum HelpTopic: String, CaseIterable {
     case help, presets, ab, undo, power
@@ -51,7 +52,7 @@ enum HelpTopic: String, CaseIterable {
     var text: String {
         switch self {
         case .help:
-            return "Help is on. Tap or hover over any control to see what it does. Tap ? again to turn help off."
+            return "Turns these help bubbles on and off. With help on, touch or hover over any control to learn what it does."
         case .presets:
             return "Step through the presets with the arrows, or tap the name to pick one from the list."
         case .ab:
@@ -120,26 +121,17 @@ struct HelpAnchorKey: PreferenceKey {
     }
 }
 
-/// Marks a control for help: dashed outline + tap/hover target while help is on.
+/// Marks a control for help. The control keeps working as usual; touching or hovering over it
+/// shows its bubble while help is switched on.
 struct HelpTarget: ViewModifier {
     @ObservedObject var face: FaceModel
     let topic: HelpTopic
 
     func body(content: Content) -> some View {
         content
-            .overlay {
-                if face.helpMode {
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(Theme.glowSoft.opacity(face.helpTopic == topic ? 1 : 0.5),
-                                      style: StrokeStyle(lineWidth: face.helpTopic == topic ? 3 : 2, dash: [7, 5]))
-                        .background(Color.white.opacity(0.001))   // catches taps across the whole control
-                        .contentShape(Rectangle())
-                        .onTapGesture { face.helpTopic = topic }
-                        .padding(-6)
-                }
-            }
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in face.showHelp(topic) })
             .onHover { inside in
-                if inside && face.helpMode { face.helpTopic = topic }
+                if inside { face.showHelp(topic) } else { face.hoverEnded(topic) }
             }
             .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [topic: $0] }
     }
@@ -157,92 +149,96 @@ extension View {
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
                     Color.clear
-                    if face.helpMode, let topic = face.helpTopic, let anchor = anchors[topic] {
+                    if let topic = face.helpTopic, let anchor = anchors[topic] {
                         let r = geo[anchor]
-                        let width: CGFloat = 420
-                        let above = r.minY > 230
-                        let x = min(max(r.midX - width / 2, 16), geo.size.width - width - 16)
-                        HelpBubble(topic: topic, pointsDown: above, arrowX: min(max(r.midX - x, 30), width - 30))
+                        let width: CGFloat = 360
+                        let height = HelpBubble.estimatedHeight(topic.text, width: width)
+                        let c = HelpBubble.center(for: r, width: width, height: height, in: geo.size)
+                        HelpBubble(topic: topic)
                             .frame(width: width)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .alignmentGuide(.top) { d in above ? d[.bottom] : d[.top] }
-                            .offset(x: x, y: above ? r.minY - 10 : r.maxY + 10)
-                            .onTapGesture { face.helpTopic = nil }
+                            .position(c)
                             .transition(.opacity)
                             .id(topic)
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                .allowsHitTesting(false)
             }
             .animation(.easeOut(duration: 0.15), value: face.helpTopic)
         }
     }
 }
 
-/// The bubble itself: dark screen glass with a red edge, like the faceplate's displays.
+/// A small smoked-glass plate with a red legend, in the faceplate's style.
 struct HelpBubble: View {
     let topic: HelpTopic
-    let pointsDown: Bool
-    let arrowX: CGFloat
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(topic.title.uppercased())
-                .font(.system(size: 17, weight: .semibold))
-                .tracking(2.5)
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .tracking(1.2)
                 .foregroundStyle(Theme.glow)
             Text(topic.text)
-                .font(.system(size: 19))
-                .foregroundStyle(Theme.text)
-                .lineSpacing(3)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Theme.cream)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(18)
+        .padding(.horizontal, 16).padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Theme.screen.opacity(0.97))
-                .shadow(color: .black.opacity(0.6), radius: 12, y: 6)
-        )
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.glow.opacity(0.8), lineWidth: 1.5))
-        .overlay(alignment: pointsDown ? .bottomLeading : .topLeading) {
-            Triangle()
-                .fill(Theme.glow.opacity(0.9))
-                .frame(width: 22, height: 11)
-                .rotationEffect(.degrees(pointsDown ? 180 : 0))
-                .offset(x: arrowX - 11, y: pointsDown ? 11 : -11)
+            RoundedRectangle(cornerRadius: 10)
+                .fill(LinearGradient(colors: [Color(red: 0.15, green: 0.12, blue: 0.13).opacity(0.97),
+                                              Color(red: 0.06, green: 0.05, blue: 0.05).opacity(0.97)],
+                                     startPoint: .top, endPoint: .bottom)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.22), lineWidth: 1.5))
+        .overlay(RoundedRectangle(cornerRadius: 9).inset(by: 3).stroke(Color.black.opacity(0.7), lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.75), radius: 9, x: 3, y: 6)
+    }
+
+    /// Beside the control (right if there is room, else left); under it for the top row.
+    /// Always kept inside the faceplate.
+    static func center(for rect: CGRect, width: CGFloat, height: CGFloat, in size: CGSize) -> CGPoint {
+        if rect.maxY < 120 {
+            let x = min(size.width - width / 2 - 12, max(width / 2 + 12, rect.midX))
+            return CGPoint(x: x, y: rect.maxY + 16 + height / 2)
         }
+        var x = rect.maxX + 16 + width / 2
+        if x + width / 2 > size.width - 12 { x = rect.minX - 16 - width / 2 }
+        x = min(size.width - width / 2 - 12, max(width / 2 + 12, x))
+        let y = min(size.height - height / 2 - 12, max(height / 2 + 12, rect.midY))
+        return CGPoint(x: x, y: y)
+    }
+
+    static func estimatedHeight(_ text: String, width: CGFloat) -> CGFloat {
+        let perLine = max(1, Int((width - 32) / 9.4))
+        let lines = (text.count + perLine - 1) / perLine
+        return 52 + CGFloat(lines) * 23
     }
 }
 
-struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        p.closeSubpath()
-        return p
-    }
-}
-
-/// The "?" button in the header.
+/// The "?" key in the header: lit while help bubbles are on.
 struct HelpButton: View {
     @ObservedObject var face: FaceModel
 
     var body: some View {
         Button {
-            face.helpMode.toggle()
-            face.helpTopic = face.helpMode ? .help : nil
+            face.helpEnabled.toggle()
+            if face.helpEnabled { face.showHelp(.help) }
         } label: {
             Text("?")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(face.helpMode ? Theme.glow : Theme.text.opacity(0.9))
-                .shadow(color: face.helpMode ? Theme.glow : .clear, radius: 6)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundStyle(face.helpEnabled ? Theme.glow : Theme.text.opacity(0.9))
+                .shadow(color: face.helpEnabled ? Theme.glow : .clear, radius: 6)
                 .frame(width: 62, height: 54)
-                .well(radius: 9, lit: face.helpMode)
+                .well(radius: 9, lit: face.helpEnabled)
         }
         .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { face.showHelp(.help) } else { face.hoverEnded(.help) }
+        }
         .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [.help: $0] }
+        .accessibilityLabel("Help bubbles")
+        .accessibilityValue(face.helpEnabled ? "On" : "Off")
     }
 }
