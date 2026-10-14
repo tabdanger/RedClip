@@ -12,6 +12,7 @@ final class MeterReader {
     private var clipUntil = Date.distantPast
     private var holdUntilIn = Date.distantPast, holdUntilOut = Date.distantPast
     private var last = Date.distantPast
+    let scroller = WaveScroller()
 
     init(shared: SharedState) { self.shared = shared }
 
@@ -147,17 +148,40 @@ struct LEDMeter: View {
     }
 }
 
-/// The main screen. The top edge of the trace reads against the face's dB scale; the lower half mirrors it.
-/// Dim trace = signal going into the clipper (after Input + Drive), bright trace = output,
-/// white-hot tips = what got clipped off.
+/// Keeps the screen scrolling at a steady speed. The audio side writes columns in bursts (one
+/// per 10 ms, delivered with each audio buffer); this glides between them at the display's frame
+/// rate, a column or two behind the newest one, and comes to rest when the audio stops.
+final class WaveScroller {
+    private var position: Double = 0
+    private var last: Date?
+
+    func update(total: Int, rate: Double, now: Date) -> Double {
+        let newest = Double(total - 1)
+        guard let previous = last else { last = now; position = newest; return position }
+        let dt = min(max(now.timeIntervalSince(previous), 0), 0.1)
+        last = now
+        if abs(newest - position) > 60 { position = newest; return position }   // new file, long pause
+        position += dt * rate                                  // steady scroll
+        position += (newest - 1.5 - position) * min(1, dt * 3) // ease toward 1.5 columns behind
+        position = min(position, newest)                       // never draw past the data
+        return position
+    }
+}
+
+/// The main screen. The top edge of the trace reads against the face's dB scale; the lower half
+/// mirrors it. Dim trace = signal going into the clipper (after Input, Drive and Gold), bright
+/// trace = output, white-hot = the part above the ceiling that the clipper takes off. The ceiling
+/// line lights up wherever audio crosses it, brighter the further it goes over.
 struct WaveformView: View {
     let shared: SharedState
     let ceilingDB: Float
     let reader: MeterReader
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+        TimelineView(.animation) { ctx in
             let _ = reader.update(ctx.date)
+            let scroll = reader.scroller.update(total: shared.waveTotal.pointee,
+                                                rate: Double(shared.waveRate.pointee), now: ctx.date)
             GeometryReader { geo in
                 let labelW: CGFloat = 62
                 let plot = CGRect(x: labelW, y: 46, width: geo.size.width - labelW - 18, height: geo.size.height - 70)
@@ -170,13 +194,13 @@ struct WaveformView: View {
                             .frame(width: labelW - 8, alignment: .trailing)
                             .position(x: (labelW - 8) / 2 + 4, y: plot.minY + CGFloat(i) / 6 * plot.height)
                     }
-                    Canvas { g, _ in draw(g, plot) }
+                    Canvas { g, _ in draw(g, plot, scroll) }
                     Text(String(format: "CEILING  %.1f dB", ceilingDB))
                         .font(.system(size: 15, weight: .semibold))
                         .tracking(1.5)
                         .underline(color: Theme.glow)
-                        .foregroundStyle(Theme.glow)
-                        .shadow(color: Theme.glow.opacity(0.8), radius: 4)
+                        .foregroundStyle(reader.reduction > 0.05 ? Color.white : Theme.glow)
+                        .shadow(color: Theme.glow.opacity(0.9), radius: 4 + CGFloat(min(reader.reduction, 6)) * 1.5)
                         .position(x: plot.maxX - 72, y: plot.minY + FaceScale.position(ceilingDB) * plot.height - 16)
                 }
             }
@@ -190,45 +214,110 @@ struct WaveformView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func draw(_ g: GraphicsContext, _ plot: CGRect) {
+    private func draw(_ g: GraphicsContext, _ plot: CGRect, _ scroll: Double) {
         let n = SharedState.waveColumns
-        let start = shared.waveWrite.pointee
-        let colW = plot.width / CGFloat(n)
-        let mid = plot.minY + FaceScale.position(-18) * plot.height    // mirror line (the -18 mark)
-        let ceilY = plot.minY + FaceScale.position(ceilingDB) * plot.height
+        let total = shared.waveTotal.pointee
+        let visible = n - 8                                     // ~10 s across the screen
+        let colW: CGFloat = plot.width / CGFloat(visible - 1)
+        let mid: CGFloat = plot.minY + FaceScale.position(-18) * plot.height   // mirror line (the -18 mark)
+        let ceilY: CGFloat = plot.minY + FaceScale.position(ceilingDB) * plot.height
+        let ceilGain = dbToGain(ceilingDB)
 
         // baseline
-        var base = Path(); base.move(to: .init(x: plot.minX, y: plot.maxY)); base.addLine(to: .init(x: plot.maxX, y: plot.maxY))
+        var base = Path(); base.move(to: CGPoint(x: plot.minX, y: plot.maxY)); base.addLine(to: CGPoint(x: plot.maxX, y: plot.maxY))
         g.stroke(base, with: .color(Theme.text.opacity(0.18)), lineWidth: 1)
 
         func topY(_ level: Float) -> CGFloat {
-            let y = plot.minY + FaceScale.position(gainToDB(level)) * plot.height
-            return min(y, mid - 1)
+            let y: CGFloat = plot.minY + FaceScale.position(gainToDB(level)) * plot.height
+            return max(min(y, mid - 1), plot.minY - 10)
         }
 
-        var inPath = Path(), outPath = Path(), hot = Path()
-        for i in 0..<n {
-            let idx = (start + i) % n
-            let x = plot.minX + CGFloat(i) * colW
-            let ti = max(topY(shared.waveIn[idx]), plot.minY - 8)
-            let to = topY(shared.waveOut[idx])
-            inPath.addRect(CGRect(x: x, y: ti, width: colW + 0.4, height: 2 * (mid - ti)))
-            outPath.addRect(CGRect(x: x, y: to, width: colW + 0.4, height: 2 * (mid - to)))
-            if ti < ceilY - 0.5 {
-                hot.addRect(CGRect(x: x, y: ti, width: colW + 0.4, height: ceilY - ti))
-                hot.addRect(CGRect(x: x, y: 2 * mid - ceilY, width: colW + 0.4, height: ceilY - ti))
+        // Columns on screen, oldest to newest. Column i sits at maxX - (scroll - i) * colW, so the
+        // whole picture slides left smoothly as `scroll` grows.
+        let newest = min(Int(scroll.rounded(.down)), total - 1)
+        let oldest = max(newest - visible, total - n + 1, 0)
+        var xs: [CGFloat] = []
+        var tIn: [CGFloat] = []
+        var tOut: [CGFloat] = []
+        var over: [Float] = []
+        if newest >= oldest {
+            xs.reserveCapacity(newest - oldest + 1)
+            tIn.reserveCapacity(newest - oldest + 1)
+            tOut.reserveCapacity(newest - oldest + 1)
+            over.reserveCapacity(newest - oldest + 1)
+            for i in oldest...newest {
+                let idx = i % n
+                let x: CGFloat = plot.maxX - CGFloat(scroll - Double(i)) * colW
+                if x < plot.minX - colW { continue }
+                let inLevel = shared.waveIn[idx]
+                xs.append(x)
+                tIn.append(topY(inLevel))
+                tOut.append(topY(shared.waveOut[idx]))
+                over.append(inLevel > ceilGain ? gainToDB(inLevel / ceilGain) : 0)
             }
         }
-        g.fill(inPath, with: .color(Theme.glow.opacity(0.22)))
-        var glow = g
-        glow.addFilter(.shadow(color: Theme.glow.opacity(0.7), radius: 5))
-        glow.fill(outPath, with: .linearGradient(Gradient(colors: [Theme.glowSoft, Theme.glow, Color(red: 0.75, green: 0.1, blue: 0.12), Theme.glow, Theme.glowSoft]),
-                                                 startPoint: .init(x: 0, y: plot.minY), endPoint: .init(x: 0, y: 2 * mid - plot.minY)))
-        g.fill(hot, with: .color(Color(red: 1, green: 0.86, blue: 0.84).opacity(0.9)))
 
-        // ceiling (dashed)
-        var p = Path(); p.move(to: .init(x: plot.minX, y: ceilY)); p.addLine(to: .init(x: plot.maxX, y: ceilY))
-        g.stroke(p, with: .color(Theme.glow.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, dash: [9, 6]))
+        if xs.count > 1 {
+            // mirrored envelope through the column tops
+            func envelope(_ tops: [CGFloat]) -> Path {
+                var p = Path()
+                p.move(to: CGPoint(x: xs[0], y: mid))
+                for k in 0..<xs.count { p.addLine(to: CGPoint(x: xs[k], y: tops[k])) }
+                p.addLine(to: CGPoint(x: xs[xs.count - 1], y: mid))
+                for k in stride(from: xs.count - 1, through: 0, by: -1) {
+                    p.addLine(to: CGPoint(x: xs[k], y: 2 * mid - tops[k]))
+                }
+                p.closeSubpath()
+                return p
+            }
+            g.fill(envelope(tIn), with: .color(Theme.glow.opacity(0.22)))
+            var glow = g
+            glow.addFilter(.shadow(color: Theme.glow.opacity(0.7), radius: 5))
+            glow.fill(envelope(tOut), with: .linearGradient(
+                Gradient(colors: [Theme.glowSoft, Theme.glow, Color(red: 0.75, green: 0.1, blue: 0.12), Theme.glow, Theme.glowSoft]),
+                startPoint: CGPoint(x: 0, y: plot.minY), endPoint: CGPoint(x: 0, y: 2 * mid - plot.minY)))
+
+            // the part above the ceiling, top and mirrored bottom
+            var hot = Path()
+            hot.move(to: CGPoint(x: xs[0], y: ceilY))
+            for k in 0..<xs.count { hot.addLine(to: CGPoint(x: xs[k], y: min(tIn[k], ceilY))) }
+            hot.addLine(to: CGPoint(x: xs[xs.count - 1], y: ceilY))
+            hot.closeSubpath()
+            var hotLow = Path()
+            hotLow.move(to: CGPoint(x: xs[0], y: 2 * mid - ceilY))
+            for k in 0..<xs.count { hotLow.addLine(to: CGPoint(x: xs[k], y: 2 * mid - min(tIn[k], ceilY))) }
+            hotLow.addLine(to: CGPoint(x: xs[xs.count - 1], y: 2 * mid - ceilY))
+            hotLow.closeSubpath()
+            var hotGlow = g
+            hotGlow.addFilter(.shadow(color: Color.white.opacity(0.8), radius: 4))
+            hotGlow.fill(hot, with: .color(Color(red: 1, green: 0.86, blue: 0.84).opacity(0.95)))
+            hotGlow.fill(hotLow, with: .color(Color(red: 1, green: 0.86, blue: 0.84).opacity(0.95)))
+        }
+
+        // ceiling line: dashes scroll with the audio
+        let dashPhase = CGFloat((scroll * Double(colW)).truncatingRemainder(dividingBy: 15))
+        for y in [ceilY, 2 * mid - ceilY] {
+            var p = Path(); p.move(to: CGPoint(x: plot.minX, y: y)); p.addLine(to: CGPoint(x: plot.maxX, y: y))
+            g.stroke(p, with: .color(Theme.glow.opacity(0.75)),
+                     style: StrokeStyle(lineWidth: 1.5, dash: [9, 6], dashPhase: dashPhase))
+        }
+
+        // ...and lights up solid where audio crosses it: light for under 2 dB over, bright beyond
+        guard xs.count > 1 else { return }
+        var light = Path(), strong = Path()
+        for k in 0..<(xs.count - 1) where over[k] > 0.05 {
+            for y in [ceilY, 2 * mid - ceilY] {
+                if over[k] > 2 {
+                    strong.move(to: CGPoint(x: xs[k], y: y)); strong.addLine(to: CGPoint(x: xs[k + 1], y: y))
+                } else {
+                    light.move(to: CGPoint(x: xs[k], y: y)); light.addLine(to: CGPoint(x: xs[k + 1], y: y))
+                }
+            }
+        }
+        var lineGlow = g
+        lineGlow.addFilter(.shadow(color: Theme.glow, radius: 6))
+        lineGlow.stroke(light, with: .color(Theme.glowSoft), lineWidth: 2.5)
+        lineGlow.stroke(strong, with: .color(Color.white), lineWidth: 3.5)
     }
 }
 

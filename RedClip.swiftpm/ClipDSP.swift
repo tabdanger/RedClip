@@ -44,13 +44,15 @@ enum Meter: Int {
 /// Memory shared between the audio thread and the UI. Allocated once, never resized.
 /// Single Float reads/writes are used as lock-free mailboxes (no locks in the audio callback).
 final class SharedState: @unchecked Sendable {
-    static let waveColumns = 600
+    static let waveColumns = 1024          // about 10 s of history at 100 columns per second
 
     let params: UnsafeMutablePointer<Float>
     let meters: UnsafeMutablePointer<Float>
-    let waveIn: UnsafeMutablePointer<Float>    // pre-clip level per column
-    let waveOut: UnsafeMutablePointer<Float>   // output level per column
+    let waveIn: UnsafeMutablePointer<Float>    // peak going INTO the clipper per column (after Input, Drive, Gold)
+    let waveOut: UnsafeMutablePointer<Float>   // output peak per column
     let waveWrite: UnsafeMutablePointer<Int>   // next column to write
+    let waveTotal: UnsafeMutablePointer<Int>   // columns written so far (never wraps; the screen scrolls by it)
+    let waveRate: UnsafeMutablePointer<Float>  // columns per second
     let power: UnsafeMutablePointer<Int32>     // 0 = power button off (plug-in passes audio through untouched)
     let loudnessReset: UnsafeMutablePointer<Int32>  // UI sets 1 to restart the integrated LUFS readings
 
@@ -66,6 +68,10 @@ final class SharedState: @unchecked Sendable {
         waveOut.initialize(repeating: 0, count: SharedState.waveColumns)
         waveWrite = .allocate(capacity: 1)
         waveWrite.initialize(to: 0)
+        waveTotal = .allocate(capacity: 1)
+        waveTotal.initialize(to: 0)
+        waveRate = .allocate(capacity: 1)
+        waveRate.initialize(to: 100)
         power = .allocate(capacity: 1)
         power.initialize(to: 1)
         loudnessReset = .allocate(capacity: 1)
@@ -74,7 +80,7 @@ final class SharedState: @unchecked Sendable {
 
     deinit {
         params.deallocate(); meters.deallocate()
-        waveIn.deallocate(); waveOut.deallocate(); waveWrite.deallocate(); power.deallocate(); loudnessReset.deallocate()
+        waveIn.deallocate(); waveOut.deallocate(); waveWrite.deallocate(); waveTotal.deallocate(); waveRate.deallocate(); power.deallocate(); loudnessReset.deallocate()
     }
 
     subscript(p: Param) -> Float {
@@ -358,13 +364,15 @@ final class ClipDSP: @unchecked Sendable {
     private let colSamples: Int
     private var colCount = 0
     private var colIn: Float = 0, colOut: Float = 0
+    private var colPre: Float = 0     // peak into the clipper, gathered in shape()
 
     init(sampleRate: Double, shared: SharedState) {
         self.sampleRate = sampleRate
         self.shared = shared
         smooth = 1 - Float(exp(-1 / (0.015 * sampleRate)))
         lufsBlock = max(1, Int((sampleRate / 10).rounded()))
-        colSamples = max(1, Int(sampleRate / 50))
+        colSamples = max(1, Int((sampleRate / 100).rounded()))
+        shared.waveRate.pointee = Float(sampleRate / Double(max(1, Int((sampleRate / 100).rounded()))))
 
         var a: [Float] = []
         for (i, factor) in [1, 2, 4, 8].enumerated() {
@@ -470,7 +478,7 @@ final class ClipDSP: @unchecked Sendable {
             }
 
             var kIn: Float = 0, kOut: Float = 0
-            var colInMax: Float = 0, colOutMax: Float = 0
+            var colOutMax: Float = 0
 
             for chIdx in 0..<2 {
                 let s = ch[chIdx]
@@ -479,8 +487,6 @@ final class ClipDSP: @unchecked Sendable {
                 let ax = abs(x)
                 if chIdx == 0 { inPeak.0 = max(inPeak.0, ax) } else { inPeak.1 = max(inPeak.1, ax) }
                 let xd = x * sDrive               // drive pushes into the clipper only
-                let ad = abs(xd)
-                colInMax = max(colInMax, ad)
 
                 // --- oversampled nonlinear section ---
                 var wet: Float = 0, ref: Float = 0
@@ -538,14 +544,16 @@ final class ClipDSP: @unchecked Sendable {
             }
 
             // waveform columns
-            colIn = max(colIn, colInMax); colOut = max(colOut, colOutMax)
+            colIn = max(colIn, colPre); colOut = max(colOut, colOutMax)
             colCount += 1
             if colCount >= colSamples {
-                let w = shared.waveWrite.pointee
+                let total = shared.waveTotal.pointee
+                let w = total % SharedState.waveColumns
                 shared.waveIn[w] = colIn
                 shared.waveOut[w] = colOut
                 shared.waveWrite.pointee = (w + 1) % SharedState.waveColumns
-                colIn = 0; colOut = 0; colCount = 0
+                shared.waveTotal.pointee = total &+ 1      // published last, after the column is filled
+                colIn = 0; colOut = 0; colPre = 0; colCount = 0
             }
         }
 
@@ -565,6 +573,7 @@ final class ClipDSP: @unchecked Sendable {
         var y = x
         if goldOn { y = Curves.goldSaturate(y, threshold: goldT, limit: goldL) * goldMakeup }
         let a = abs(y)
+        colPre = max(colPre, a)
         if a > c { clipOver = max(clipOver, a / c) }     // CLIP readout: how far past the ceiling
         y = Curves.clip(y, ceiling: c, knee: knee)
 
