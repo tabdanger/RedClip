@@ -68,6 +68,7 @@ struct FaceplateView: View {
             .foregroundStyle(Theme.text)
             .frame(width: 400, height: 54)
             .well(radius: 10)
+            .helpTarget(.presets, face)
 
             Spacer().frame(width: 46)
 
@@ -79,15 +80,20 @@ struct FaceplateView: View {
             .padding(4)
             .frame(width: 124, height: 54)
             .well(radius: 10)
+            .helpTarget(.ab, face)
 
             Spacer().frame(width: 44)
             VGroove().frame(height: 54)
-            Spacer().frame(width: 32)
+            Spacer().frame(width: 24)
             IconButton(icon: "arrow.uturn.backward", enabled: params.canUndo) { params.undo() }
-            Spacer().frame(width: 32)
+                .helpTarget(.undo, face)
+            Spacer().frame(width: 14)
+            HelpButton(face: face)
+            Spacer().frame(width: 24)
             VGroove().frame(height: 54)
             Spacer().frame(width: 26)
             PowerButton(isOn: face.isPowered) { face.togglePower() }
+                .helpTarget(.power, face)
             Spacer()
         }
     }
@@ -110,17 +116,21 @@ struct FaceplateView: View {
         HStack(alignment: .top, spacing: 0) {
             LEDMeter(title: "Input", reader: face.meters, isInput: true)
                 .frame(width: 150, height: 370)
+                .helpTarget(.inputMeter, face)
                 .padding(.leading, 40)
                 .padding(.top, 28)
             VStack(spacing: 14) {
                 WaveformView(shared: face.shared, ceilingDB: params[.ceilingDB], reader: face.meters)
                     .frame(width: 1030, height: 335)
+                    .helpTarget(.screen, face)
                 ClipReadout(reader: face.meters)
+                    .helpTarget(.clipReadout, face)
             }
             .padding(.top, 24)
             .frame(maxWidth: .infinity)
             LEDMeter(title: "Output", reader: face.meters, isInput: false)
                 .frame(width: 150, height: 370)
+                .helpTarget(.outputMeter, face)
                 .padding(.trailing, 28)
                 .padding(.top, 28)
         }
@@ -128,19 +138,20 @@ struct FaceplateView: View {
 
     private var knobRow: some View {
         HStack(spacing: 0) {
-            knob("Input", .inputDB, "-12", "+12", Fmt.db)
-            knob("Drive", .driveDB, "0", "12", Fmt.dbPlain)
-            knob("Ceiling", .ceilingDB, "-12", "0", Fmt.dbPlain)
-            knob("Mix", .mix, "0", "100", Fmt.pct)
-            knob("Output", .outputDB, "-12", "+12", Fmt.db)
+            knob("Input", .inputDB, "-12", "+12", Fmt.db, .input)
+            knob("Drive", .driveDB, "0", "12", Fmt.dbPlain, .drive)
+            knob("Ceiling", .ceilingDB, "-12", "0", Fmt.dbPlain, .ceiling)
+            knob("Mix", .mix, "0", "100", Fmt.pct, .mix)
+            knob("Output", .outputDB, "-12", "+12", Fmt.db, .output)
         }
         .padding(.horizontal, 30)
     }
 
     private func knob(_ title: String, _ p: Param, _ lo: String, _ hi: String,
-                      _ f: @escaping (Float) -> String) -> some View {
+                      _ f: @escaping (Float) -> String, _ topic: HelpTopic) -> some View {
         Knob(title: title, value: params.binding(p), range: p.range, defaultValue: p.defaultValue,
              diameter: 200, minLabel: lo, maxLabel: hi, format: f)
+            .helpTarget(topic, face)
             .frame(maxWidth: .infinity)
     }
 
@@ -151,11 +162,14 @@ struct FaceplateView: View {
             HStack(spacing: 22) {
                 Knob(title: "Red", value: params.binding(.gold), range: Param.gold.range, defaultValue: 0,
                      diameter: 110, minLabel: "0", maxLabel: "100", format: Fmt.pct)
+                    .helpTarget(.red, face)
                 VStack(spacing: 12) {
                     Segments(options: ["Modern", "Classic"], selection: params.binding(.goldMode),
                              height: 46, fontSize: 16)
                         .frame(width: 230)
+                        .helpTarget(.redStyle, face)
                     GlowButton(title: "Unity Gain", isOn: params.flag(.unity), height: 46, fontSize: 16)
+                        .helpTarget(.unity, face)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -165,6 +179,7 @@ struct FaceplateView: View {
             // ALCHEMY
             Knob(title: "Fire", value: params.binding(.alchemy), range: Param.alchemy.range, defaultValue: 0,
                  diameter: 110, minLabel: "0", maxLabel: "100", format: Fmt.pct)
+                .helpTarget(.fire, face)
                 .frame(width: 260)
 
             VGroove().frame(height: 130)
@@ -176,6 +191,7 @@ struct FaceplateView: View {
                          height: 50, fontSize: 16)
                     .frame(width: 320)
             }
+            .helpTarget(.boxTone, face)
             .frame(width: 380)
 
             VGroove().frame(height: 130)
@@ -184,6 +200,7 @@ struct FaceplateView: View {
             VStack(spacing: 14) {
                 Theme.label("Listen", size: 18)
                 GlowButton(title: "Delta", icon: "triangle", isOn: params.flag(.delta), height: 54, fontSize: 18)
+                    .helpTarget(.delta, face)
             }
             .frame(width: 230)
         }
@@ -197,9 +214,11 @@ struct FaceplateView: View {
                 Segments(options: ["Hard", "Classic", "Modern"], selection: params.binding(.clipMode))
                     .frame(width: 390)
             }
+            .helpTarget(.clipMode, face)
             .frame(width: 470)
             VGroove().frame(height: 80)
             GlowButton(title: "Link", icon: "link", isOn: params.flag(.link))
+                .helpTarget(.link, face)
                 .frame(width: 230)
             VGroove().frame(height: 80)
             VStack(spacing: 14) {
@@ -207,9 +226,11 @@ struct FaceplateView: View {
                 Segments(options: ["1x", "2x", "4x"], selection: params.binding(.oversampling))
                     .frame(width: 356)
             }
+            .helpTarget(.oversampling, face)
             .frame(width: 430)
             VGroove().frame(height: 80)
             LEDButton(title: "Bypass", isOn: params.flag(.bypass))
+                .helpTarget(.bypass, face)
                 .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 30)

@@ -56,6 +56,7 @@ struct PluginRootView: View {
             let size = FaceplateView.size
             let scale = min(geo.size.width / size.width, geo.size.height / size.height)
             FaceplateView(face: face, params: face.params)
+                .helpBubbles(face)
                 .scaleEffect(scale)
                 .frame(width: geo.size.width, height: geo.size.height)
         }

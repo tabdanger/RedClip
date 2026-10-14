@@ -19,6 +19,7 @@ struct AppRootView: View {
                 transportStrip.frame(width: total.width, height: stripHeight)
             }
             .frame(width: total.width, height: total.height)
+            .helpBubbles(face)
             .scaleEffect(scale)
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -45,9 +46,13 @@ struct AppRootView: View {
             stripButton(audio.isPlaying ? "stop.fill" : "play.fill", audio.isPlaying ? "Stop" : "Play") {
                 audio.togglePlay()
             }
+            .helpTarget(.play, face)
             stripButton("folder", "Load") { showImporter = true }
+                .helpTarget(.load, face)
             samplesMenu
+                .helpTarget(.samples, face)
             stripButton("music.note", "Demo") { audio.loadDemo() }
+                .helpTarget(.demo, face)
 
             Text(audio.fileName)
                 .font(.system(size: 19, weight: .medium))
@@ -79,6 +84,7 @@ struct AppRootView: View {
                 ShareLink(item: url) { stripLabel("square.and.arrow.up", "Share WAV") }
             } else {
                 stripButton("square.and.arrow.down", "Export") { audio.export() }
+                    .helpTarget(.export, face)
             }
         }
         .padding(.horizontal, 24)

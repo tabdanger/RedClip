@@ -9,6 +9,9 @@ final class FaceModel: ObservableObject {
     let isPlugin: Bool
 
     @Published private(set) var isPowered = true
+    /// The "?" help mode and the control whose explanation is showing.
+    @Published var helpMode = false
+    @Published var helpTopic: HelpTopic?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?
 
