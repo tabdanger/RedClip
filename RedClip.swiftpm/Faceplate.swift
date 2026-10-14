@@ -149,7 +149,7 @@ struct FaceplateView: View {
         HStack(alignment: .center, spacing: 0) {
             // GOLD
             HStack(spacing: 22) {
-                Knob(title: "Gold", value: params.binding(.gold), range: Param.gold.range, defaultValue: 0,
+                Knob(title: "Red", value: params.binding(.gold), range: Param.gold.range, defaultValue: 0,
                      diameter: 110, minLabel: "0", maxLabel: "100", format: Fmt.pct)
                 VStack(spacing: 12) {
                     Segments(options: ["Modern", "Classic"], selection: params.binding(.goldMode),
@@ -163,7 +163,7 @@ struct FaceplateView: View {
             VGroove().frame(height: 130)
 
             // ALCHEMY
-            Knob(title: "Alchemy", value: params.binding(.alchemy), range: Param.alchemy.range, defaultValue: 0,
+            Knob(title: "Fire", value: params.binding(.alchemy), range: Param.alchemy.range, defaultValue: 0,
                  diameter: 110, minLabel: "0", maxLabel: "100", format: Fmt.pct)
                 .frame(width: 260)
 

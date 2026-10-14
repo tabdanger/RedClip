@@ -47,10 +47,10 @@ extension Param {
         case .oversampling: return "Oversampling"
         case .link: return "Link"
         case .bypass: return "Bypass"
-        case .gold: return "Gold"
-        case .goldMode: return "Gold Mode"
+        case .gold: return "Red"
+        case .goldMode: return "Red Mode"
         case .unity: return "Unity Gain"
-        case .alchemy: return "Alchemy"
+        case .alchemy: return "Fire"
         case .boxTone: return "Box Tone"
         case .delta: return "Delta"
         }
