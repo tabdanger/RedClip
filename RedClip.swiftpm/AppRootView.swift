@@ -7,19 +7,26 @@ struct AppRootView: View {
     @ObservedObject var audio: AudioController
     @ObservedObject var face: FaceModel
 
-    /// The transport strip is the bottom of the faceplate picture (RCStrip, 1448 x 89).
-    let stripHeight: CGFloat = 89
+    /// iPad: the faceplate with its transport strip picture under it. iPhone: the portrait face,
+    /// whose transport is part of the picture. Same controls, same behaviour.
+    let layout = PlateLayout.current
 
     var body: some View {
         GeometryReader { geo in
-            let total = CGSize(width: FaceplateView.size.width, height: FaceplateView.size.height + stripHeight)
+            let total = layout.canvas
             let scale = min(geo.size.width / total.width, geo.size.height / total.height)
-            VStack(spacing: 0) {
-                FaceplateView(face: face, params: face.params)
-                transportStrip.frame(width: total.width, height: stripHeight)
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: 0) {
+                    FaceplateView(face: face, params: face.params, layout: layout)
+                    if let strip = layout.strip {
+                        Image(face.theme.image(strip)).resizable().interpolation(.high)
+                            .frame(width: total.width, height: total.height - layout.size.height)
+                    }
+                }
+                transport
             }
-            .frame(width: total.width, height: total.height)
-            .helpBubbles(face)
+            .frame(width: total.width, height: total.height, alignment: .topLeading)
+            .helpBubbles(face, scale: layout.bubbleScale)
             .scaleEffect(scale)
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -39,52 +46,52 @@ struct AppRootView: View {
         }
     }
 
-    // MARK: Transport strip (below the face) — the picture's own strip, with live labels on top.
-    // Coordinates are pixels in RCStrip (the faceplate picture's rows 997 to 1086).
+    // MARK: Transport (Load / Play / Export) — the picture's own buttons, with live labels on top.
+    // Rectangles are canvas pixels from the layout.
 
-    private var transportStrip: some View {
+    private var T: PlateLayout.Transport { layout.transport }
+
+    private var transport: some View {
         ZStack(alignment: .topLeading) {
-            Image(face.theme.image("RCStrip")).resizable().interpolation(.high)
-                .frame(width: FaceplateView.size.width, height: stripHeight)
-
             // PLAY / PAUSE (spacebar too)
             Button { audio.togglePlay() } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 17, weight: .bold))
-                    Text(audio.isPlaying ? "PAUSE" : "PLAY").font(.system(size: 16, weight: .semibold)).tracking(1.6)
+                HStack(spacing: T.font * 0.62) {
+                    Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill").font(.system(size: T.font * 1.06, weight: .bold))
+                    Text(audio.isPlaying ? "PAUSE" : "PLAY").font(.system(size: T.font, weight: .semibold)).tracking(T.font * 0.1)
                 }
                 .foregroundStyle(audio.isPlaying ? Plate.glow : face.theme.text)
-                .frame(width: 115, height: 45).contentShape(Rectangle())
+                .frame(width: T.play.width, height: T.play.height).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.space, modifiers: [])
-            .helpTarget(.play, face).place(x: 65, y: 15, w: 115, h: 45)
+            .helpTarget(.play, face).place(T.play)
 
             HitArea { face.importRequested = true }
-                .helpTarget(.load, face).place(x: 193, y: 15, w: 115, h: 45)
+                .helpTarget(.load, face).place(T.load)
             samplesMenu
-                .helpTarget(.samples, face).place(x: 323, y: 15, w: 145, h: 45)
+                .helpTarget(.samples, face).place(T.samples)
             HitArea { audio.loadDemo() }
-                .helpTarget(.demo, face).place(x: 483, y: 15, w: 107, h: 45)
+                .helpTarget(.demo, face).place(T.demo)
 
             Text(audio.fileName)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: T.font, weight: .medium))
                 .foregroundStyle(face.theme.text)
                 .lineLimit(1)
-                .frame(width: 165, alignment: .leading)
-                .place(x: 607, y: 25, w: 165, h: 24)
+                .frame(width: T.fileName.width, alignment: .leading)
+                .place(T.fileName)
 
             // progress along the picture's groove; drag to seek
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
                 GeometryReader { geo in
                     let w = geo.size.width
                     let p = CGFloat(audio.progress)
+                    let dot = T.font * 0.7
                     ZStack(alignment: .leading) {
                         Capsule().fill(Plate.glow.opacity(0.85)).frame(width: max(3, p * w), height: 3)
                             .shadow(color: Plate.glow, radius: 3)
-                        Circle().fill(Plate.glow).frame(width: 11, height: 11)
+                        Circle().fill(Plate.glow).frame(width: dot, height: dot)
                             .shadow(color: Plate.glow, radius: 5)
-                            .offset(x: max(0, p * w - 5.5))
+                            .offset(x: max(0, p * w - dot / 2))
                     }
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
@@ -93,7 +100,7 @@ struct AppRootView: View {
                     })
                 }
             }
-            .place(x: 790, y: 22, w: 436, h: 30)
+            .place(T.progress)
 
             Group {
                 if audio.isBusy {
@@ -105,25 +112,27 @@ struct AppRootView: View {
                         .buttonStyle(.plain)
                 }
             }
-            .helpTarget(.export, face).place(x: 1251, y: 15, w: 131, h: 45)
+            .helpTarget(.export, face).place(T.export)
         }
-        .frame(width: FaceplateView.size.width, height: stripHeight, alignment: .topLeading)
+        .frame(width: layout.canvas.width, height: layout.canvas.height, alignment: .topLeading)
     }
 
     private func stripLegend(_ icon: String, _ title: String) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
-            Text(title).font(.system(size: 16, weight: .semibold)).tracking(1.6)
+        HStack(spacing: T.font * 0.56) {
+            Image(systemName: icon).font(.system(size: T.font, weight: .semibold))
+            Text(title).font(.system(size: T.font, weight: .semibold)).tracking(T.font * 0.1)
         }
         .foregroundStyle(face.theme.text)
-        .frame(width: 131, height: 45).contentShape(Rectangle())
+        .frame(width: T.export.width, height: T.export.height).contentShape(Rectangle())
     }
 
     /// Everything in On My iPad › Red Clip › Samples.
     private var samplesMenu: some View {
         Menu {
             if audio.samples.isEmpty {
-                Text("Put audio files in Files › On My iPad › Red Clip › Samples")
+                Text(UIDevice.current.userInterfaceIdiom == .phone
+                     ? "Put audio files in Files › On My iPhone › Red Clip › Samples"
+                     : "Put audio files in Files › On My iPad › Red Clip › Samples")
             } else {
                 ForEach(audio.samples, id: \.self) { url in
                     Button(SampleLibrary.relativeName(url)) { audio.load(url: url) }

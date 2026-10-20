@@ -22,7 +22,9 @@ public final class RedClipAUViewController: AUViewController, AUAudioUnitFactory
     public override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        preferredContentSize = CGSize(width: 724, height: 499)   // half the faceplate picture
+        // half the faceplate picture (iPad face 1448 x 997; iPhone face 852 x 1690 above its transport)
+        let layout = PlateLayout.current
+        preferredContentSize = CGSize(width: layout.size.width / 2, height: layout.pluginHeight / 2)
         showFace()
     }
 
@@ -53,10 +55,11 @@ struct PluginRootView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let size = FaceplateView.size
+            let layout = PlateLayout.current
+            let size = CGSize(width: layout.size.width, height: layout.pluginHeight)
             let scale = min(geo.size.width / size.width, geo.size.height / size.height)
-            FaceplateView(face: face, params: face.params)
-                .helpBubbles(face)
+            FaceplateView(face: face, params: face.params, layout: layout)
+                .helpBubbles(face, scale: layout.bubbleScale)
                 .scaleEffect(scale)
                 .frame(width: geo.size.width, height: geo.size.height)
         }

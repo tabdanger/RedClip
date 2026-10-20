@@ -54,7 +54,7 @@ def main():
         "UIApplicationSupportsIndirectInputEvents": True,
         "UILaunchScreen": {"UILaunchScreen": {}},
         "UISupportedInterfaceOrientations~ipad": orientations,
-        "UISupportedInterfaceOrientations~iphone": orientations[:3],
+        "UISupportedInterfaceOrientations~iphone": ["UIInterfaceOrientationPortrait"],
     }
     with open(EXTRA, "rb") as handle:
         app.update(plistlib.load(handle))

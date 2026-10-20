@@ -3,7 +3,7 @@
 import PackageDescription
 import AppleProductTypes
 
-// Red Clip runs on iPad only. The AUv3 plug-in (for Logic Pro, GarageBand, AUM...) is built on
+// Red Clip runs on iPad and iPhone (portrait face on iPhone). The AUv3 plug-in (for Logic Pro, GarageBand, AUM...) is built on
 // GitHub from the Xcode project in ../xcode, from these same files plus ../AUv3.
 let package = Package(
     name: "Red Clip",
@@ -19,10 +19,10 @@ let package = Package(
             bundleVersion: "1",
             appIcon: .asset("AppIcon"),
             accentColor: .presetColor(.red),
-            supportedDeviceFamilies: [.pad],
+            supportedDeviceFamilies: [.pad, .phone],
             supportedInterfaceOrientations: [
-                .landscapeRight,
-                .landscapeLeft,
+                .landscapeRight(.when(deviceFamilies: [.pad])),
+                .landscapeLeft(.when(deviceFamilies: [.pad])),
                 .portrait,
                 .portraitUpsideDown(.when(deviceFamilies: [.pad]))
             ],

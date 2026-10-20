@@ -105,7 +105,7 @@ enum HelpTopic: String, CaseIterable {
         case .load:
             return "Opens the Files app to pick any audio file. It gets copied into your Red Clip Samples folder."
         case .samples:
-            return "Everything in Files › On My iPad › Red Clip › Samples. Drop your own audio in there and it shows up here."
+            return "Everything in Files › On My iPad (or On My iPhone) › Red Clip › Samples. Drop your own audio in there and it shows up here."
         case .demo:
             return "Loads the built-in drum loop so you can try Red Clip straight away."
         case .export:
@@ -145,7 +145,8 @@ extension View {
 
     /// Draws the help bubble. Put it on the unscaled design-size container (the faceplate, or the
     /// faceplate plus the transport strip).
-    func helpBubbles(_ face: FaceModel) -> some View {
+    /// `scale` enlarges the bubble for faces drawn at a higher pixel density (the iPhone face).
+    func helpBubbles(_ face: FaceModel, scale: CGFloat = 1) -> some View {
         overlayPreferenceValue(HelpAnchorKey.self) { anchors in
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
@@ -154,9 +155,10 @@ extension View {
                         let r = geo[anchor]
                         let width: CGFloat = 360
                         let height = HelpBubble.estimatedHeight(topic.text, width: width)
-                        let c = HelpBubble.center(for: r, width: width, height: height, in: geo.size)
+                        let c = HelpBubble.center(for: r, width: width * scale, height: height * scale, in: geo.size)
                         HelpBubble(topic: topic)
                             .frame(width: width)
+                            .scaleEffect(scale)
                             .position(c)
                             .transition(.opacity)
                             .id(topic)
@@ -203,6 +205,13 @@ struct HelpBubble: View {
         if rect.maxY < 120 {
             let x = min(size.width - width / 2 - 12, max(width / 2 + 12, rect.midX))
             return CGPoint(x: x, y: rect.maxY + 16 + height / 2)
+        }
+        if width > size.width * 0.55 {
+            // narrow face (iPhone): under the control if it fits, otherwise above it
+            let x = size.width / 2
+            let below = rect.maxY + 16 + height / 2
+            if below + height / 2 < size.height - 12 { return CGPoint(x: x, y: below) }
+            return CGPoint(x: x, y: max(height / 2 + 12, rect.minY - 16 - height / 2))
         }
         var x = rect.maxX + 16 + width / 2
         if x + width / 2 > size.width - 12 { x = rect.minX - 16 - width / 2 }

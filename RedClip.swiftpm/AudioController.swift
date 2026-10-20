@@ -231,7 +231,7 @@ final class AudioController: ObservableObject {
         let s = AVAudioSession.sharedInstance()
         do {
             try s.setCategory(.playback, mode: .default)
-            try s.setPreferredIOBufferDuration(256.0 / 48_000.0)
+            try s.setPreferredIOBufferDuration(128.0 / 48_000.0)   // 128-frame buffer, low latency
             try s.setActive(true)
         } catch {
             errorMessage = "Audio session error: \(error.localizedDescription)"
