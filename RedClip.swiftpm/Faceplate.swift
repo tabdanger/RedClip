@@ -52,8 +52,30 @@ struct FaceplateView: View {
                 }
                 Spacer()
                 Menu {
-                    ForEach(Preset.factory.indices, id: \.self) { i in
-                        Button(Preset.factory[i].name) { params.apply(i) }
+                    // Audio import comes first (standalone app; in a DAW the track is the audio)
+                    if !face.isPlugin {
+                        Section("Audio") {
+                            Button { face.importRequested = true } label: {
+                                Label("Import Audio from Files…", systemImage: "square.and.arrow.down")
+                            }
+                            if face.sampleFiles.isEmpty {
+                                Text("Samples folder is empty")
+                            } else {
+                                Menu {
+                                    ForEach(face.sampleFiles) { item in
+                                        Button(item.name) { face.loadSample?(item.url) }
+                                    }
+                                } label: {
+                                    Label("Samples", systemImage: "square.stack.3d.down.right")
+                                }
+                            }
+                            Button { face.loadDemo?() } label: { Label("Demo Loop", systemImage: "music.note") }
+                        }
+                    }
+                    Section("Presets") {
+                        ForEach(Preset.factory.indices, id: \.self) { i in
+                            Button(Preset.factory[i].name) { params.apply(i) }
+                        }
                     }
                 } label: {
                     Text(params.presetName).font(.system(size: 23, weight: .regular)).foregroundStyle(Theme.text)

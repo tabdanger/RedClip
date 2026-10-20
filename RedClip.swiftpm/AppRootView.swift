@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 struct AppRootView: View {
     @ObservedObject var audio: AudioController
     @ObservedObject var face: FaceModel
-    @State var showImporter = false
 
     let stripHeight: CGFloat = 84
 
@@ -25,7 +24,7 @@ struct AppRootView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio]) { result in
+        .fileImporter(isPresented: $face.importRequested, allowedContentTypes: [.audio]) { result in
             if case .success(let url) = result { audio.load(url: url) }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
@@ -47,7 +46,7 @@ struct AppRootView: View {
                 audio.togglePlay()
             }
             .helpTarget(.play, face)
-            stripButton("folder", "Load") { showImporter = true }
+            stripButton("folder", "Load") { face.importRequested = true }
                 .helpTarget(.load, face)
             samplesMenu
                 .helpTarget(.samples, face)

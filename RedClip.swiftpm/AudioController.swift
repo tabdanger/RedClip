@@ -36,7 +36,10 @@ final class AudioController: ObservableObject {
     @Published private(set) var samples: [URL] = []
 
     /// Re-reads On My iPad › Red Clip › Samples (called on launch, on return to the app, after LOAD).
-    func refreshSamples() { samples = SampleLibrary.list() }
+    func refreshSamples() {
+        samples = SampleLibrary.list()
+        face.sampleFiles = samples.map { SampleItem(url: $0, name: SampleLibrary.relativeName($0)) }
+    }
 
     private let engine = AVAudioEngine()
     private var source: AVAudioSourceNode?
@@ -60,6 +63,8 @@ final class AudioController: ObservableObject {
         refreshSamples()
         loadDemo()
         face.onPowerChange = { [weak self] on in self?.powerChanged(on) }
+        face.loadSample = { [weak self] url in self?.load(url: url) }
+        face.loadDemo = { [weak self] in self?.loadDemo() }
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
                                                object: nil, queue: .main) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,

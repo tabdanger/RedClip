@@ -175,8 +175,8 @@ struct Knob: View {
                     .onChanged { g in
                         if dragStart == nil { dragStart = value }
                         let span = range.upperBound - range.lowerBound
-                        // Tension: a full sweep takes 600 points of drag on every knob, big or small
-                        let delta = Float(-g.translation.height + g.translation.width * 0.3) / 600 * span
+                        // Tension: a full sweep takes 900 points of drag on every knob, big or small
+                        let delta = Float(-g.translation.height + g.translation.width * 0.3) / 900 * span
                         value = min(max((dragStart ?? value) + delta, range.lowerBound), range.upperBound)
                     }
                     .onEnded { _ in dragStart = nil }

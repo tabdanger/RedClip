@@ -22,6 +22,12 @@ final class FaceModel: ObservableObject {
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?
 
+    // Audio page of the top menu (standalone app only; in a DAW the host supplies the audio)
+    @Published var sampleFiles: [SampleItem] = []
+    @Published var importRequested = false
+    var loadSample: ((URL) -> Void)?
+    var loadDemo: (() -> Void)?
+
     init(isPlugin: Bool) {
         let state = SharedState()
         shared = state
@@ -60,6 +66,13 @@ final class FaceModel: ObservableObject {
         helpHide = hide
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: hide)
     }
+}
+
+/// One file in the Samples folder, for the top menu.
+struct SampleItem: Identifiable, Hashable {
+    let url: URL
+    let name: String
+    var id: URL { url }
 }
 
 // MARK: - Names and units for the host (Logic shows these in automation lanes)
