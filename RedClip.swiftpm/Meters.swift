@@ -214,7 +214,7 @@ struct WaveformView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func draw(_ g: GraphicsContext, _ plot: CGRect, _ scroll: Double) {
+    func draw(_ g: GraphicsContext, _ plot: CGRect, _ scroll: Double) {
         let n = SharedState.waveColumns
         let total = shared.waveTotal.pointee
         let visible = n - 8                                     // ~10 s across the screen

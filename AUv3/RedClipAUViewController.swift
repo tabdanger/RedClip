@@ -22,7 +22,7 @@ public final class RedClipAUViewController: AUViewController, AUAudioUnitFactory
     public override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        preferredContentSize = CGSize(width: 724, height: 638)   // half the face's design size
+        preferredContentSize = CGSize(width: 724, height: 499)   // half the faceplate picture
         showFace()
     }
 

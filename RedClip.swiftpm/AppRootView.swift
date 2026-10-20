@@ -7,7 +7,8 @@ struct AppRootView: View {
     @ObservedObject var audio: AudioController
     @ObservedObject var face: FaceModel
 
-    let stripHeight: CGFloat = 84
+    /// The transport strip is the bottom of the faceplate picture (RCStrip, 1448 x 89).
+    let stripHeight: CGFloat = 89
 
     var body: some View {
         GeometryReader { geo in
@@ -38,57 +39,84 @@ struct AppRootView: View {
         }
     }
 
-    // MARK: Transport strip (below the face)
+    // MARK: Transport strip (below the face) — the picture's own strip, with live labels on top.
+    // Coordinates are pixels in RCStrip (the faceplate picture's rows 997 to 1086).
 
     private var transportStrip: some View {
-        HStack(spacing: 14) {
-            stripButton(audio.isPlaying ? "stop.fill" : "play.fill", audio.isPlaying ? "Stop" : "Play") {
-                audio.togglePlay()
+        ZStack(alignment: .topLeading) {
+            Image("RCStrip").resizable().interpolation(.high)
+                .frame(width: FaceplateView.size.width, height: stripHeight)
+
+            // PLAY / PAUSE (spacebar too)
+            Button { audio.togglePlay() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 17, weight: .bold))
+                    Text(audio.isPlaying ? "PAUSE" : "PLAY").font(.system(size: 16, weight: .semibold)).tracking(1.6)
+                }
+                .foregroundStyle(audio.isPlaying ? Plate.glowHot : Plate.text)
+                .frame(width: 115, height: 45).contentShape(Rectangle())
             }
-            .helpTarget(.play, face)
-            stripButton("folder", "Load") { face.importRequested = true }
-                .helpTarget(.load, face)
+            .buttonStyle(.plain)
+            .keyboardShortcut(.space, modifiers: [])
+            .helpTarget(.play, face).place(x: 65, y: 15, w: 115, h: 45)
+
+            HitArea { face.importRequested = true }
+                .helpTarget(.load, face).place(x: 193, y: 15, w: 115, h: 45)
             samplesMenu
-                .helpTarget(.samples, face)
-            stripButton("music.note", "Demo") { audio.loadDemo() }
-                .helpTarget(.demo, face)
+                .helpTarget(.samples, face).place(x: 323, y: 15, w: 145, h: 45)
+            HitArea { audio.loadDemo() }
+                .helpTarget(.demo, face).place(x: 483, y: 15, w: 107, h: 45)
 
             Text(audio.fileName)
-                .font(.system(size: 19, weight: .medium))
-                .foregroundStyle(Theme.text)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Plate.text)
                 .lineLimit(1)
-                .frame(width: 200, alignment: .leading)
+                .frame(width: 165, alignment: .leading)
+                .place(x: 607, y: 25, w: 165, h: 24)
 
-            TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { _ in
+            // progress along the picture's groove; drag to seek
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
                 GeometryReader { geo in
+                    let w = geo.size.width
+                    let p = CGFloat(audio.progress)
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color(white: 0.14))
-                        Capsule().fill(Theme.glow)
-                            .frame(width: max(8, geo.size.width * audio.progress))
-                            .shadow(color: Theme.glow.opacity(0.7), radius: 4)
+                        Capsule().fill(Plate.glow.opacity(0.85)).frame(width: max(3, p * w), height: 3)
+                            .shadow(color: Plate.glow, radius: 3)
+                        Circle().fill(Plate.glow).frame(width: 11, height: 11)
+                            .shadow(color: Plate.glow, radius: 5)
+                            .offset(x: max(0, p * w - 5.5))
                     }
-                    .frame(height: 8)
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0).onChanged { g in
-                        audio.seek(to: Double(g.location.x / geo.size.width))
+                        audio.seek(to: Double(min(max(g.location.x / w, 0), 1)))
                     })
                 }
             }
-            .frame(height: 44)
+            .place(x: 790, y: 22, w: 436, h: 30)
 
-            if audio.isBusy {
-                ProgressView().tint(Theme.glow).frame(width: 140)
-            } else if let url = audio.exportURL {
-                ShareLink(item: url) { stripLabel("square.and.arrow.up", "Share WAV") }
-            } else {
-                stripButton("square.and.arrow.down", "Export") { audio.export() }
-                    .helpTarget(.export, face)
+            Group {
+                if audio.isBusy {
+                    ProgressView().tint(Plate.glow)
+                } else if let url = audio.exportURL {
+                    ShareLink(item: url) { stripLegend("square.and.arrow.up", "SHARE") }
+                } else {
+                    Button { audio.export() } label: { stripLegend("square.and.arrow.up", "EXPORT") }
+                        .buttonStyle(.plain)
+                }
             }
+            .helpTarget(.export, face).place(x: 1251, y: 15, w: 131, h: 45)
         }
-        .padding(.horizontal, 24)
-        .frame(maxHeight: .infinity)
-        .background(Color(white: 0.06))
+        .frame(width: FaceplateView.size.width, height: stripHeight, alignment: .topLeading)
+    }
+
+    private func stripLegend(_ icon: String, _ title: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
+            Text(title).font(.system(size: 16, weight: .semibold)).tracking(1.6)
+        }
+        .foregroundStyle(Plate.text)
+        .frame(width: 131, height: 45).contentShape(Rectangle())
     }
 
     /// Everything in On My iPad › Red Clip › Samples.
@@ -104,7 +132,7 @@ struct AppRootView: View {
             Divider()
             Button { audio.refreshSamples() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
         } label: {
-            stripLabel("square.stack.3d.down.right", "Samples")
+            Color.clear.contentShape(Rectangle())   // the SAMPLES legend is in the picture
         }
     }
 
