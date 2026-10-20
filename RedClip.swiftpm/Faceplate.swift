@@ -71,8 +71,12 @@ struct FaceplateView: View {
                     }
                 }
                 Section("Presets") {
-                    ForEach(Preset.factory.indices, id: \.self) { i in
-                        Button(Preset.factory[i].name) { params.apply(i) }
+                    ForEach(Preset.banks, id: \.self) { bank in
+                        Menu(bank) {
+                            ForEach(Preset.factory.indices.filter { Preset.factory[$0].bank == bank }, id: \.self) { i in
+                                Button(Preset.factory[i].name) { params.apply(i) }
+                            }
+                        }
                     }
                 }
                 Section("Settings") {

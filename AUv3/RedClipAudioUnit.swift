@@ -79,7 +79,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
         factory = Preset.factory.enumerated().map { index, preset in
             let item = AUAudioUnitPreset()
             item.number = index
-            item.name = preset.name
+            item.name = preset.bank + " · " + preset.name
             return item
         }
     }

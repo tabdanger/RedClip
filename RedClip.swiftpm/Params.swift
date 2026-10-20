@@ -143,23 +143,15 @@ final class ParamStore: ObservableObject {
 }
 
 struct Preset: Identifiable {
+    let bank: String
     let name: String
     let values: [Param: Float]
-    var id: String { name }
+    var id: String { bank + "/" + name }
 
-    static let factory: [Preset] = [
-        Preset(name: "Default", values: [:]),
-        Preset(name: "Gentle Master", values: [.inputDB: 2, .ceilingDB: -0.3, .clipMode: 1, .gold: 25,
-                                               .alchemy: 30, .boxTone: 1, .oversampling: 2]),
-        Preset(name: "Loud Master", values: [.inputDB: 3, .driveDB: 4, .ceilingDB: -0.3, .clipMode: 2,
-                                             .gold: 55, .goldMode: 1, .alchemy: 50, .boxTone: 2,
-                                             .oversampling: 2]),
-        Preset(name: "Drum Bus Smash", values: [.driveDB: 9, .ceilingDB: -1, .clipMode: 0, .gold: 70,
-                                                .goldMode: 1, .alchemy: 20, .oversampling: 2, .mix: 70,
-                                                .unity: 1]),
-        Preset(name: "808 Edge", values: [.driveDB: 7, .clipMode: 2, .gold: 35, .alchemy: 65,
-                                          .oversampling: 2, .unity: 1]),
-        Preset(name: "Transient Shave", values: [.inputDB: 3, .ceilingDB: -1, .clipMode: 1,
-                                                 .alchemy: 40, .oversampling: 2, .unity: 1])
-    ]
+    /// Bank names in menu order (factory list order).
+    static let banks: [String] = {
+        var seen: [String] = []
+        for p in factory where !seen.contains(p.bank) { seen.append(p.bank) }
+        return seen
+    }()
 }
