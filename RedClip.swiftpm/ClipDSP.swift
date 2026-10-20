@@ -41,70 +41,63 @@ enum Meter: Int {
     static let count = 12
 }
 
-/// Memory shared between the audio thread and the UI. Allocated once, never resized.
-/// Single Float reads/writes are used as lock-free mailboxes (no locks in the audio callback).
+/// Memory shared between the audio thread and the UI. Allocated once, never resized. Every
+/// field is a lock-free atomic (SharedMemory.swift), so neither side ever waits on the other:
+///   - params: the UI (and the host) write settings, the audio thread reads them each block;
+///   - meters: the audio thread raises peaks with storeMax, the UI takes them with exchange;
+///   - rings / wave columns: the audio thread writes samples, then publishes the new count with
+///     release ordering; the UI acquires the count before reading the samples.
+/// All mutable DSP state (filters, smoothers, ramps, loudness) lives in ClipDSP and the render
+/// state, owned by the audio thread alone.
 final class SharedState: @unchecked Sendable {
     static let waveColumns = 1024          // about 10 s of history at 100 columns per second
 
-    let params: UnsafeMutablePointer<Float>
-    let meters: UnsafeMutablePointer<Float>
-    let waveIn: UnsafeMutablePointer<Float>    // peak going INTO the clipper per column (after Input, Drive, Gold)
-    let waveOut: UnsafeMutablePointer<Float>   // output peak per column
-    let waveWrite: UnsafeMutablePointer<Int>   // next column to write
-    let waveTotal: UnsafeMutablePointer<Int>   // columns written so far (never wraps; the screen scrolls by it)
-    let waveRate: UnsafeMutablePointer<Float>  // columns per second
-    let power: UnsafeMutablePointer<Int32>     // 0 = power button off (plug-in passes audio through untouched)
-    let loudnessReset: UnsafeMutablePointer<Int32>  // UI sets 1 to restart the integrated LUFS readings
+    let params: AtomicFloats
+    let meters: AtomicFloats
+    let waveIn: AtomicFloats     // peak going INTO the clipper per column (after Input, Drive, Gold)
+    let waveOut: AtomicFloats    // output peak per column
+    let waveWrite: AtomicInt     // next column to write
+    let waveTotal: AtomicInt     // columns written so far (never wraps; the screen scrolls by it), published
+    let waveRate: AtomicFloat    // columns per second
+    let power: AtomicInt         // 0 = power button off (plug-in passes audio through untouched)
+    let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
 
     // Sample rings for the screen (oscilloscope) and the LED meters. The audio thread writes one
     // value per sample into each; the UI copies the newest stretch at display rate.
     static let ringSize = 16384                       // power of two (~340 ms at 48 kHz)
     static let ringMask = ringSize - 1
-    let scopePre: UnsafeMutablePointer<Float>         // into the clipper (after Input, Drive, Red), L+R / 2
-    let scopePost: UnsafeMutablePointer<Float>        // clipped output, time-aligned with scopePre
-    let meterInL: UnsafeMutablePointer<Float>         // after the Input knob
-    let meterInR: UnsafeMutablePointer<Float>
-    let meterOutL: UnsafeMutablePointer<Float>        // final output
-    let meterOutR: UnsafeMutablePointer<Float>
-    let ringTotal: UnsafeMutablePointer<Int>          // samples written so far
-    let sampleRate: UnsafeMutablePointer<Float>
+    let scopePre: AtomicFloats         // into the clipper (after Input, Drive, Red), L+R / 2
+    let scopePost: AtomicFloats        // clipped output, time-aligned with scopePre
+    let meterInL: AtomicFloats         // after the Input knob
+    let meterInR: AtomicFloats
+    let meterOutL: AtomicFloats        // final output
+    let meterOutR: AtomicFloats
+    let ringTotal: AtomicInt           // samples written so far, published once per block
+    let sampleRate: AtomicFloat
 
     init() {
-        params = .allocate(capacity: Param.allCases.count)
+        params = AtomicFloats(count: Param.allCases.count)
         for p in Param.allCases { params[p.rawValue] = p.defaultValue }
-        meters = .allocate(capacity: Meter.count)
-        meters.initialize(repeating: 0, count: Meter.count)
+        meters = AtomicFloats(count: Meter.count)
         for m in [Meter.inLUFS, .outLUFS, .inLUFSM, .outLUFSM, .inLUFSI, .outLUFSI] { meters[m.rawValue] = -70 }
-        waveIn = .allocate(capacity: SharedState.waveColumns)
-        waveIn.initialize(repeating: 0, count: SharedState.waveColumns)
-        waveOut = .allocate(capacity: SharedState.waveColumns)
-        waveOut.initialize(repeating: 0, count: SharedState.waveColumns)
-        waveWrite = .allocate(capacity: 1)
-        waveWrite.initialize(to: 0)
-        waveTotal = .allocate(capacity: 1)
-        waveTotal.initialize(to: 0)
-        waveRate = .allocate(capacity: 1)
-        waveRate.initialize(to: 100)
-        power = .allocate(capacity: 1)
-        power.initialize(to: 1)
-        loudnessReset = .allocate(capacity: 1)
-        loudnessReset.initialize(to: 0)
-        func ring() -> UnsafeMutablePointer<Float> {
-            let p = UnsafeMutablePointer<Float>.allocate(capacity: SharedState.ringSize)
-            p.initialize(repeating: 0, count: SharedState.ringSize)
-            return p
-        }
-        scopePre = ring(); scopePost = ring()
-        meterInL = ring(); meterInR = ring(); meterOutL = ring(); meterOutR = ring()
-        ringTotal = .allocate(capacity: 1)
-        ringTotal.initialize(to: 0)
-        sampleRate = .allocate(capacity: 1)
-        sampleRate.initialize(to: 48_000)
+        waveIn = AtomicFloats(count: SharedState.waveColumns)
+        waveOut = AtomicFloats(count: SharedState.waveColumns)
+        waveWrite = AtomicInt(0)
+        waveTotal = AtomicInt(0)
+        waveRate = AtomicFloat(100)
+        power = AtomicInt(1)
+        loudnessReset = AtomicInt(0)
+        scopePre = AtomicFloats(count: SharedState.ringSize); scopePost = AtomicFloats(count: SharedState.ringSize)
+        meterInL = AtomicFloats(count: SharedState.ringSize); meterInR = AtomicFloats(count: SharedState.ringSize)
+        meterOutL = AtomicFloats(count: SharedState.ringSize); meterOutR = AtomicFloats(count: SharedState.ringSize)
+        ringTotal = AtomicInt(0)
+        sampleRate = AtomicFloat(48_000)
     }
 
     deinit {
         params.deallocate(); meters.deallocate()
-        waveIn.deallocate(); waveOut.deallocate(); waveWrite.deallocate(); waveTotal.deallocate(); waveRate.deallocate(); power.deallocate(); loudnessReset.deallocate()
+        waveIn.deallocate(); waveOut.deallocate()
+        waveWrite.deallocate(); waveTotal.deallocate(); waveRate.deallocate(); power.deallocate(); loudnessReset.deallocate()
         for p in [scopePre, scopePost, meterInL, meterInR, meterOutL, meterOutR] { p.deallocate() }
         ringTotal.deallocate(); sampleRate.deallocate()
     }
@@ -372,7 +365,7 @@ final class ClipDSP: @unchecked Sendable {
     private var sIn: Float = 1, sDrive: Float = 1, sOut: Float = 1, sMix: Float = 1
     private var sCeil: Float = 1, sGold: Float = 0, sAlch: Float = 0, sBypass: Float = 0
     private var sUnity: Float = 0
-    private let smooth: Float
+    private let smooth: Float          // 15 ms: knob moves and immediate automation, click-free
 
     // Gold (per base-rate sample, shared by both channels and every oversampled sub-sample)
     private var goldOn = false
@@ -399,8 +392,8 @@ final class ClipDSP: @unchecked Sendable {
         smooth = 1 - Float(exp(-1 / (0.015 * sampleRate)))
         lufsBlock = max(1, Int((sampleRate / 10).rounded()))
         colSamples = max(1, Int((sampleRate / 100).rounded()))
-        shared.sampleRate.pointee = Float(sampleRate)
-        shared.waveRate.pointee = Float(sampleRate / Double(max(1, Int((sampleRate / 100).rounded()))))
+        shared.sampleRate.value = Float(sampleRate)
+        shared.waveRate.value = Float(sampleRate / Double(max(1, Int((sampleRate / 100).rounded()))))
 
         var a: [Float] = []
         for (i, factor) in [1, 2, 4, 8].enumerated() {
@@ -448,8 +441,14 @@ final class ClipDSP: @unchecked Sendable {
     }
 
     /// Process one block. Inputs may alias each other (mono files pass the same pointer twice).
+    /// `gliding` has one bit per Param (bit = rawValue) for controls the host is ramping right
+    /// now. Those move in a straight line from where they are to this block's target, sample by
+    /// sample, landing on it at the block's last sample (the render cuts ramps into short
+    /// blocks), so the host's ramp comes through with its exact shape and length, no lag.
+    /// Everything else uses the 15 ms smoother, which keeps knob moves click-free.
     func process(inL: UnsafePointer<Float>, inR: UnsafePointer<Float>,
-                 outL: UnsafeMutablePointer<Float>, outR: UnsafeMutablePointer<Float>, frames: Int) {
+                 outL: UnsafeMutablePointer<Float>, outR: UnsafeMutablePointer<Float>, frames: Int,
+                 gliding: UInt32 = 0) {
         let p = shared.params
         let osIdx = Int(p[Param.oversampling.rawValue].rounded()).clamped(0, 2)
         if osIdx != curOS { configureOversampling(osIdx) }
@@ -480,21 +479,33 @@ final class ClipDSP: @unchecked Sendable {
         let tMix = p[Param.mix.rawValue] / 100
         let tBypass: Float = p[Param.bypass.rawValue] > 0.5 ? 1 : 0
 
-        if shared.loudnessReset.pointee != 0 {
-            shared.loudnessReset.pointee = 0
+        if shared.loudnessReset.value != 0, shared.loudnessReset.exchange(0) != 0 {
             loudIn.reset(); loudOut.reset()
         }
 
         var inPeak: (Float, Float) = (0, 0), outPeak: (Float, Float) = (0, 0)
         clipOver = 1
-        let k = smooth
+        // per control: ramping -> fixed step per sample to the target; otherwise -> 0 (smoother)
+        let per = 1 / Float(max(frames, 1))
+        @inline(__always) func step(_ q: Param, _ target: Float, _ now: Float) -> Float {
+            gliding & (1 << UInt32(q.rawValue)) != 0 ? (target - now) * per : 0
+        }
+        let dIn = step(.inputDB, tIn, sIn), dOut = step(.outputDB, tOut, sOut)
+        let dDrive = step(.driveDB, tDrive, sDrive), dMix = step(.mix, tMix, sMix)
+        let dCeil = step(.ceilingDB, tCeil, sCeil), dGold = step(.gold, tGold, sGold)
+        let dAlch = step(.alchemy, tAlch, sAlch)
+        @inline(__always) func ramps(_ q: Param) -> Bool { gliding & (1 << UInt32(q.rawValue)) != 0 }
+        let gIn = ramps(.inputDB), gOut = ramps(.outputDB), gDrive = ramps(.driveDB), gMix = ramps(.mix)
+        let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy)
+        let ks = smooth
+        var ringPos = shared.ringTotal.value          // only this thread writes it
 
         for n in 0..<frames {
-            sIn += k * (tIn - sIn); sOut += k * (tOut - sOut)
-            sDrive += k * (tDrive - sDrive); sMix += k * (tMix - sMix)
-            sCeil += k * (tCeil - sCeil); sGold += k * (tGold - sGold)
-            sAlch += k * (tAlch - sAlch); sBypass += k * (tBypass - sBypass)
-            sUnity += k * (tUnity - sUnity)
+            sIn += gIn ? dIn : ks * (tIn - sIn); sOut += gOut ? dOut : ks * (tOut - sOut)
+            sDrive += gDrive ? dDrive : ks * (tDrive - sDrive); sMix += gMix ? dMix : ks * (tMix - sMix)
+            sCeil += gCeil ? dCeil : ks * (tCeil - sCeil); sGold += gGold ? dGold : ks * (tGold - sGold)
+            sAlch += gAlch ? dAlch : ks * (tAlch - sAlch); sBypass += ks * (tBypass - sBypass)
+            sUnity += ks * (tUnity - sUnity)
             let c = sCeil
 
             // Gold for this sample: threshold -2G, peak limit -G (re ceiling), make-up +G unless Unity
@@ -563,14 +574,14 @@ final class ClipDSP: @unchecked Sendable {
             // screen + meter rings. With oversampling the clipped output comes out of the
             // down-sampling filter about 2 samples late, so the pre-clip trace is stored 2 slots
             // ahead to keep the two traces lined up.
-            let total = shared.ringTotal.pointee
+            let total = ringPos
             let slot = total & SharedState.ringMask
             let preSlot = (total + (factor == 1 ? 0 : 2)) & SharedState.ringMask
             shared.scopePre[preSlot] = preSum * 0.5
             shared.scopePost[slot] = postSum * 0.5
             shared.meterInL[slot] = xs.0; shared.meterInR[slot] = xs.1
             shared.meterOutL[slot] = outs.0; shared.meterOutR[slot] = outs.1
-            shared.ringTotal.pointee = total &+ 1
+            ringPos = total &+ 1
 
             // loudness: 100 ms blocks into the BS.1770 meters
             accIn += Double(kIn); accOut += Double(kOut)
@@ -592,24 +603,27 @@ final class ClipDSP: @unchecked Sendable {
             colIn = max(colIn, colPre); colOut = max(colOut, colOutMax)
             colCount += 1
             if colCount >= colSamples {
-                let total = shared.waveTotal.pointee
+                let total = shared.waveTotal.value
                 let w = total % SharedState.waveColumns
                 shared.waveIn[w] = colIn
                 shared.waveOut[w] = colOut
-                shared.waveWrite.pointee = (w + 1) % SharedState.waveColumns
-                shared.waveTotal.pointee = total &+ 1      // published last, after the column is filled
+                shared.waveWrite.value = (w + 1) % SharedState.waveColumns
+                shared.waveTotal.publish(total &+ 1)      // published last, after the column is filled
                 colIn = 0; colOut = 0; colPre = 0; colCount = 0
             }
         }
 
-        // meters: audio thread keeps the max, UI reads and resets
+        // publish this block's samples (the UI acquires the count before reading them)
+        shared.ringTotal.publish(ringPos)
+
+        // meters: audio thread raises the max, UI takes and clears it in one atomic step
         let m = shared.meters
-        m[Meter.inPeakL.rawValue] = max(m[Meter.inPeakL.rawValue], inPeak.0)
-        m[Meter.inPeakR.rawValue] = max(m[Meter.inPeakR.rawValue], inPeak.1)
-        m[Meter.outPeakL.rawValue] = max(m[Meter.outPeakL.rawValue], outPeak.0)
-        m[Meter.outPeakR.rawValue] = max(m[Meter.outPeakR.rawValue], outPeak.1)
+        m.storeMax(Meter.inPeakL.rawValue, inPeak.0)
+        m.storeMax(Meter.inPeakR.rawValue, inPeak.1)
+        m.storeMax(Meter.outPeakL.rawValue, outPeak.0)
+        m.storeMax(Meter.outPeakR.rawValue, outPeak.1)
         if clipOver > 1 { m[Meter.clip.rawValue] = 1 }
-        m[Meter.reductionDB.rawValue] = max(m[Meter.reductionDB.rawValue], gainToDB(clipOver))
+        m.storeMax(Meter.reductionDB.rawValue, gainToDB(clipOver))
     }
 
     /// Gold (Lavry-style soft saturation + make-up) -> clipper -> Alchemy, at the oversampled rate.

@@ -45,17 +45,17 @@ final class AudioController: ObservableObject {
     private var source: AVAudioSourceNode?
     private var buffer: PlayerBuffer?
 
-    // lock-free transport shared with the render block
-    private let playhead = UnsafeMutablePointer<Int>.allocate(capacity: 1)
-    private let playFlag = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+    // lock-free transport shared with the render block: the audio thread owns the playhead and
+    // publishes it; the UI asks for a seek through a mailbox the audio thread takes.
+    private let playhead = AtomicInt(0)
+    private let playFlag = AtomicInt(0)
+    private let seekRequest = AtomicInt(-1)            // -1 = none
     private static let chunk = 1024
     private let scratchL = UnsafeMutablePointer<Float>.allocate(capacity: AudioController.chunk)
     private let scratchR = UnsafeMutablePointer<Float>.allocate(capacity: AudioController.chunk)
 
     init() {
         face = FaceModel(isPlugin: false)
-        playhead.initialize(to: 0)
-        playFlag.initialize(to: 0)
         scratchL.initialize(repeating: 0, count: AudioController.chunk)
         scratchR.initialize(repeating: 0, count: AudioController.chunk)
         configureSession()
@@ -80,7 +80,7 @@ final class AudioController: ObservableObject {
 
     var progress: Double {
         guard let b = buffer else { return 0 }
-        return Double(playhead.pointee) / Double(b.frames)
+        return Double(playhead.value) / Double(b.frames)
     }
 
     func togglePlay() { isPlaying ? stop() : play() }
@@ -99,18 +99,20 @@ final class AudioController: ObservableObject {
     func play() {
         if !isPowered { face.setPowered(true) }
         if !engine.isRunning { try? engine.start() }
-        playFlag.pointee = 1
+        playFlag.value = 1
         isPlaying = true
     }
 
     func stop() {
-        playFlag.pointee = 0
+        playFlag.value = 0
         isPlaying = false
     }
 
     func seek(to fraction: Double) {
         guard let b = buffer else { return }
-        playhead.pointee = min(b.frames - 1, max(0, Int(fraction * Double(b.frames))))
+        let target = min(b.frames - 1, max(0, Int(fraction * Double(b.frames))))
+        seekRequest.value = target
+        playhead.value = target                      // so the bar follows the finger straight away
     }
 
     // MARK: Loading
@@ -169,11 +171,12 @@ final class AudioController: ObservableObject {
         if let s = source { engine.detach(s); source = nil }
 
         let dsp = ClipDSP(sampleRate: b.sampleRate, shared: shared)
-        let ph = playhead, flag = playFlag, sL = scratchL, sR = scratchR, chunk = AudioController.chunk
-        ph.pointee = 0
+        let ph = playhead, flag = playFlag, seek = seekRequest, sL = scratchL, sR = scratchR, chunk = AudioController.chunk
+        ph.value = 0          // the engine is stopped here, so nothing renders while these reset
+        seek.value = -1
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
-        let node = AudioController.makeSourceNode(format: fmt, buffer: b, dsp: dsp, playhead: ph, playFlag: flag,
+        let node = AudioController.makeSourceNode(format: fmt, buffer: b, dsp: dsp, playhead: ph, playFlag: flag, seek: seek,
                                                   scratchL: sL, scratchR: sR, chunk: chunk)
 
         engine.attach(node)
@@ -190,8 +193,9 @@ final class AudioController: ObservableObject {
 
     /// Built outside the main actor so the render block carries no actor isolation.
     nonisolated private static func makeSourceNode(format fmt: AVAudioFormat, buffer b: PlayerBuffer, dsp: ClipDSP,
-                                                   playhead ph: UnsafeMutablePointer<Int>,
-                                                   playFlag flag: UnsafeMutablePointer<Int32>,
+                                                   playhead ph: AtomicInt,
+                                                   playFlag flag: AtomicInt,
+                                                   seek: AtomicInt,
                                                    scratchL sL: UnsafeMutablePointer<Float>,
                                                    scratchR sR: UnsafeMutablePointer<Float>,
                                                    chunk: Int) -> AVAudioSourceNode {
@@ -202,7 +206,7 @@ final class AudioController: ObservableObject {
                   let oR = list[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
             let total = Int(frameCount)
 
-            if flag.pointee == 0 {
+            if flag.value == 0 {
                 // idle: output silence and skip the DSP
                 oL.update(repeating: 0, count: total)
                 oR.update(repeating: 0, count: total)
@@ -211,7 +215,11 @@ final class AudioController: ObservableObject {
             }
 
             var done = 0
-            var pos = ph.pointee
+            var pos = ph.value
+            if seek.value >= 0 {
+                let target = seek.exchange(-1)
+                if target >= 0 { pos = min(target, b.frames - 1) }
+            }
             while done < total {
                 let n = min(total - done, chunk)
                 for i in 0..<n {
@@ -222,7 +230,7 @@ final class AudioController: ObservableObject {
                 dsp.process(inL: sL, inR: sR, outL: oL + done, outR: oR + done, frames: n)
                 done += n
             }
-            ph.pointee = pos
+            ph.value = pos
             return noErr
         }
     }

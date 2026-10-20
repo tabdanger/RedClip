@@ -455,16 +455,16 @@ final class StereoMeterState {
         let dt = min(max(now.timeIntervalSince(last ?? now), 0), 0.1)
         if let last, now.timeIntervalSince(last) < 0.008 { return }      // once per frame
         last = now
-        let total = shared.ringTotal.pointee
+        let total = shared.ringTotal.acquire()
         let moving = total != lastTotal
         lastTotal = total
-        let window = max(1, Int(Double(shared.sampleRate.pointee) * 0.02))
-        let rings = [shared.meterInL, shared.meterInR, shared.meterOutL, shared.meterOutR]
+        let window = max(1, Int(Double(shared.sampleRate.value) * 0.02))
         for n in 0..<4 {
+            let ring = n == 0 ? shared.meterInL : n == 1 ? shared.meterInR : n == 2 ? shared.meterOutL : shared.meterOutR
             var sum: Double = 0, peak: Double = 0
             if moving {
                 for k in 0..<window {
-                    let v = Double(rings[n][(total - 1 - k) & SharedState.ringMask])
+                    let v = Double(ring[(total - 1 - k) & SharedState.ringMask])
                     sum += v * v
                     peak = max(peak, abs(v))
                 }
@@ -597,16 +597,16 @@ struct PlateScreen: View {
                at: CGPoint(x: W - 12, y: 15), anchor: .trailing)
 
         // the newest 120 ms from the rings
-        let total = shared.ringTotal.pointee
-        let span = max(2, min(SharedState.ringSize - 8, Int(Double(shared.sampleRate.pointee) * 0.12)))
+        let total = shared.ringTotal.acquire()
+        let span = max(2, min(SharedState.ringSize - 8, Int(Double(shared.sampleRate.value) * 0.12)))
         if total > 4 {
             let newest = total - 1
-            func sample(_ ring: UnsafeMutablePointer<Float>, _ i: Int) -> CGFloat {
+            func sample(_ ring: AtomicFloats, _ i: Int) -> CGFloat {
                 let back = span - 1 - (i * (span - 1)) / (n - 1)
                 let v = CGFloat(ring[(newest - back) & SharedState.ringMask])
                 return max(min(v, 2.2), -2.2)        // keep the trace on the glass
             }
-            func path(_ ring: UnsafeMutablePointer<Float>) -> Path {
+            func path(_ ring: AtomicFloats) -> Path {
                 var p = Path()
                 for i in 0..<n {
                     let pt = CGPoint(x: L + (R - L) * CGFloat(i) / CGFloat(n - 1), y: cy - sample(ring, i) * k)

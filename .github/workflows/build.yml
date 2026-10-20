@@ -12,6 +12,7 @@ on:
     paths:
       - "RedClip.swiftpm/**"
       - "AUv3/**"
+      - "Tests/**"
       - "xcode/**"
       - ".github/workflows/build.yml"
       - ".github/scripts/annotate.py"
@@ -73,6 +74,36 @@ jobs:
             exit 1
           fi
           echo "::notice title=AUv3::Red Clip.app built with the AUv3 effect inside."
+
+      - name: Regression tests on the iOS Simulator (real AUv3 render path, Thread Sanitizer on)
+        run: |
+          SIM=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          ids = [dev['udid'] for rt in sorted(d, reverse=True) if 'iOS' in rt for dev in d[rt] if dev['name'].startswith('iPhone')]
+          print(ids[0] if ids else '')")
+          if [ -z "$SIM" ]; then echo "::error title=Tests::No iPhone simulator on this machine."; exit 1; fi
+          xcodebuild test \
+            -project xcode/RedClip.xcodeproj \
+            -scheme RedClipTests \
+            -destination "id=$SIM" \
+            -enableThreadSanitizer YES \
+            -derivedDataPath "$RUNNER_TEMP/dd-tests" \
+            CODE_SIGNING_ALLOWED=NO \
+            > "$RUNNER_TEMP/tests.log" 2>&1 || true
+          python3 "$GITHUB_WORKSPACE/.github/scripts/annotate.py" "$RUNNER_TEMP/tests.log" "Tests"
+          grep -E "^Test Case .*(passed|failed)" "$RUNNER_TEMP/tests.log" | while read -r line; do
+            name=$(echo "$line" | sed -E "s/.*-\[[A-Za-z]+ ([A-Za-z0-9_]+)\].*/\1/")
+            if echo "$line" | grep -q passed; then echo "::notice title=Test passed::$name"; else echo "::error title=Test failed::$name"; fi
+          done
+          grep -E "error: .*XCT|XCTAssert.*failed" "$RUNNER_TEMP/tests.log" | head -20 | while read -r line; do echo "::error title=Assertion::$line"; done
+          if grep -q "ThreadSanitizer" "$RUNNER_TEMP/tests.log"; then
+            REPORT=$(grep -A14 "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" | head -40 | tr '\n' '|' | sed 's/%/%25/g')
+            echo "::error title=Thread Sanitizer::$REPORT"
+            exit 1
+          fi
+          echo "::notice title=Thread Sanitizer::No data races reported."
+          grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/tests.log"
 
       - name: Keep the build logs
         if: always()

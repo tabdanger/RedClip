@@ -95,7 +95,7 @@ def main():
     package_dir = os.path.join(ROOT, "RedClip.swiftpm")
     # The plug-in has no app entry point, transport/player or sample library (the host plays the audio).
     app_only = {"RedClipApp.swift", "AppRootView.swift", "AudioController.swift", "SampleLibrary.swift"}
-    for target, skip in (("app", set()), ("plugin", app_only)):
+    for target, skip in (("app", set()), ("plugin", app_only), ("tests", app_only)):
         sources = os.path.join(OUT, target, "Sources")
         resources = os.path.join(OUT, target, "Resources")
         shutil.rmtree(sources, ignore_errors=True)
@@ -104,6 +104,13 @@ def main():
         for name in sorted(os.listdir(package_dir)):
             if name.endswith(".swift") and name != "Package.swift" and name not in skip:
                 shutil.copyfile(os.path.join(package_dir, name), os.path.join(sources, name))
+        if target == "tests":
+            # The tests drive the real plug-in (RedClipAudioUnit and its render block), so they
+            # get their own copy of the AUv3 files too.
+            auv3 = os.path.join(ROOT, "AUv3")
+            for name in sorted(os.listdir(auv3)):
+                if name.endswith(".swift"):
+                    shutil.copyfile(os.path.join(auv3, name), os.path.join(sources, name))
         shutil.copytree(os.path.join(package_dir, "Resources"), resources)
         # Package.swift's `accentColor: .presetColor(.red)`: Playgrounds adds this colour to
         # the asset catalog under this name and points NSAccentColorName at it (project.yml

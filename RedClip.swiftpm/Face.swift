@@ -46,7 +46,7 @@ final class FaceModel: ObservableObject {
     func setPowered(_ on: Bool) {
         guard on != isPowered else { return }
         isPowered = on
-        shared.power.pointee = on ? 1 : 0
+        shared.power.value = on ? 1 : 0
         onPowerChange?(on)
     }
 

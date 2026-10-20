@@ -96,8 +96,8 @@ public final class RedClipAudioUnit: AUAudioUnit {
     public override var tailTime: TimeInterval { 0 }
 
     public override var shouldBypassEffect: Bool {
-        get { render.bypassed.pointee != 0 }
-        set { render.bypassed.pointee = newValue ? 1 : 0 }
+        get { render.bypassed.value != 0 }
+        set { render.bypassed.value = newValue ? 1 : 0 }
     }
 
     // MARK: Parameters and presets
@@ -127,7 +127,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
             var values: [String: Float] = [:]
             for p in Param.allCases { values[p.id] = shared[p] }
             state[Self.stateKey] = values
-            state[Self.powerKey] = shared.power.pointee != 0
+            state[Self.powerKey] = shared.power.value != 0
             return state
         }
         set {
@@ -164,8 +164,8 @@ public final class RedClipAudioUnit: AUAudioUnit {
     public override var internalRenderBlock: AUInternalRenderBlock {
         let state = render
         let shared = self.shared
-        let paramCount = Param.allCases.count
         return { _, timestamp, frameCount, _, outputData, events, pullInputBlock in
+            // Audio thread: no locks, no allocation, no waiting, no main-thread work.
             guard let dsp = state.dsp, let inList = state.inputList, let pull = pullInputBlock else {
                 return kAudioUnitErr_NoConnection
             }
@@ -178,22 +178,13 @@ public final class RedClipAudioUnit: AUAudioUnit {
             let status = pull(&pullFlags, timestamp, frameCount, 0, inList)
             if status != noErr { return status }
 
-            // 2. Automation that arrives with this block.
-            var event = events
-            while let e = event {
-                let type = e.pointee.head.eventType
-                if type == .parameter || type == .parameterRamp {
-                    let address = Int(e.pointee.parameter.parameterAddress)
-                    if address >= 0 && address < paramCount { shared.params[address] = e.pointee.parameter.value }
-                }
-                event = UnsafePointer(e.pointee.head.next)
-            }
-
-            // 3. Process (in place when the host gives no output memory).
             let input = UnsafeMutableAudioBufferListPointer(inList)
             let output = UnsafeMutableAudioBufferListPointer(outputData)
             guard input.count > 0, output.count > 0,
-                  let inL = input[0].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+                  let inL = input[0].mData?.assumingMemoryBound(to: Float.self) else {
+                state.applyEvents(events, upTo: frames, start: timestamp.pointee.mSampleTime, frames: frames, shared: shared)
+                return noErr
+            }
             for i in 0..<output.count where output[i].mData == nil {
                 output[i].mData = input[min(i, input.count - 1)].mData
                 output[i].mDataByteSize = frameCount * UInt32(MemoryLayout<Float>.size)
@@ -202,20 +193,42 @@ public final class RedClipAudioUnit: AUAudioUnit {
             let stereo = input.count > 1 && output.count > 1
             let inR = stereo ? (input[1].mData?.assumingMemoryBound(to: Float.self) ?? inL) : inL
             let outR = stereo ? (output[1].mData?.assumingMemoryBound(to: Float.self) ?? state.spareR) : state.spareR
-
-            if state.bypassed.pointee != 0 || shared.power.pointee == 0 {
-                if outL != inL { outL.update(from: inL, count: frames) }
-                if stereo && outR != inR { outR.update(from: inR, count: frames) }
-                return noErr
-            }
-            if stereo {
-                dsp.process(inL: inL, inR: inR, outL: outL, outR: outR, frames: frames)
-            } else {
+            let passThrough = state.bypassed.value != 0 || shared.power.value == 0
+            if !stereo && !passThrough {
                 // Mono: copy first, so writing the output in place can't change what the
                 // second (meter-only) channel reads.
                 state.monoIn.update(from: inL, count: frames)
-                dsp.process(inL: state.monoIn, inR: state.monoIn, outL: outL, outR: state.spareR, frames: frames)
             }
+            let srcL: UnsafePointer<Float> = stereo || passThrough ? UnsafePointer(inL) : UnsafePointer(state.monoIn)
+            let srcR: UnsafePointer<Float> = stereo ? UnsafePointer(inR) : srcL
+
+            // 2. Sample-accurate automation. The block is cut at every event's sample offset;
+            //    while the host ramps a control, it's cut every rampStep frames and the value
+            //    follows the ramp. Ramps that don't finish here carry on in the next block.
+            let start = timestamp.pointee.mSampleTime
+            var event = events
+            var done = 0
+            while done < frames {
+                event = state.applyEvents(event, upTo: done, start: start, frames: frames, shared: shared)
+                var end = frames
+                if let e = event { end = min(end, state.offset(of: e.pointee.head.eventSampleTime, start: start, frames: frames)) }
+                let gliding = state.rampMask
+                if gliding != 0 {
+                    end = min(end, done + RedClipRenderState.rampStep)
+                    state.advanceRamps(by: end - done, shared: shared)
+                }
+                let n = end - done
+                if passThrough {
+                    if outL != inL { (outL + done).update(from: inL + done, count: n) }
+                    if stereo && outR != inR { (outR + done).update(from: inR + done, count: n) }
+                } else {
+                    dsp.process(inL: srcL + done, inR: srcR + done, outL: outL + done, outR: outR + done,
+                                frames: n, gliding: gliding)
+                }
+                done = end
+            }
+            // events stamped at (or after) the block's end take effect from the next block
+            state.applyEvents(event, upTo: Int.max, start: start, frames: frames, shared: shared)
             return noErr
         }
     }
@@ -265,29 +278,138 @@ public final class RedClipAudioUnit: AUAudioUnit {
     }
 }
 
-/// Everything the render block needs, made when the host starts rendering (never on the audio thread).
+/// Everything the render block needs, made when the host starts rendering (never on the audio
+/// thread). The ramp state belongs to the audio thread alone; the UI and host reach the controls
+/// only through SharedState's atomics.
 final class RedClipRenderState: @unchecked Sendable {
     private(set) var dsp: ClipDSP?
     private(set) var inputList: UnsafeMutablePointer<AudioBufferList>?
     private(set) var maxFrames = 0
-    let bypassed = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+    let bypassed = AtomicInt(0)                  // host's "bypass effect" (any thread) -> audio
     private(set) var spareR = UnsafeMutablePointer<Float>.allocate(capacity: 1)
     private(set) var monoIn = UnsafeMutablePointer<Float>.allocate(capacity: 1)
     private var inputBuffer: AVAudioPCMBuffer?
-    private var inputPointers: [UnsafeMutableRawPointer?] = []
+    private let inputPointers = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: 2)
+    private var inputPointerCount = 0
 
-    init() { bypassed.initialize(to: 0) }
+    /// While a ramp runs, the block is processed in pieces this long; the DSP moves the control
+    /// in a straight line across each piece, so the ramp is followed sample by sample.
+    static let rampStep = 16
+    /// AUEventSampleTimeImmediate: events stamped "now + n" rather than at an absolute time.
+    static let immediate = AUEventSampleTime(bitPattern: 0xffff_ffff_0000_0000)
+
+    // Ramps in progress, one slot per Param (audio thread only).
+    private let count = Param.allCases.count
+    private let rampValue: UnsafeMutablePointer<Float>
+    private let rampStepSize: UnsafeMutablePointer<Float>
+    private let rampTarget: UnsafeMutablePointer<Float>
+    private let rampLeft: UnsafeMutablePointer<Int>
+    private let lower: UnsafeMutablePointer<Float>
+    private let upper: UnsafeMutablePointer<Float>
+    private let continuous: UnsafeMutablePointer<Bool>
+    /// One bit per Param that is ramping (bit = Param.rawValue).
+    private(set) var rampMask: UInt32 = 0
+
+    init() {
+        rampValue = .allocate(capacity: count); rampValue.initialize(repeating: 0, count: count)
+        rampStepSize = .allocate(capacity: count); rampStepSize.initialize(repeating: 0, count: count)
+        rampTarget = .allocate(capacity: count); rampTarget.initialize(repeating: 0, count: count)
+        rampLeft = .allocate(capacity: count); rampLeft.initialize(repeating: 0, count: count)
+        lower = .allocate(capacity: count); upper = .allocate(capacity: count)
+        continuous = .allocate(capacity: count)
+        for p in Param.allCases {
+            lower[p.rawValue] = p.range.lowerBound
+            upper[p.rawValue] = p.range.upperBound
+            continuous[p.rawValue] = p.valueNames == nil      // switches and selectors jump, never ramp
+        }
+        inputPointers.initialize(repeating: nil, count: 2)
+    }
 
     deinit {
         bypassed.deallocate()
         spareR.deallocate()
         monoIn.deallocate()
+        inputPointers.deallocate()
+        for p in [rampValue, rampStepSize, rampTarget, lower, upper] { p.deallocate() }
+        rampLeft.deallocate(); continuous.deallocate()
+    }
+
+    // MARK: Automation (audio thread)
+
+    /// Where in this block an event falls, 0...frames. Handles AUEventSampleTimeImmediate
+    /// (+ offset) as well as absolute sample times.
+    @inline(__always) func offset(of time: AUEventSampleTime, start: Double, frames: Int) -> Int {
+        let immediate = RedClipRenderState.immediate
+        let raw: Int64
+        if time >= immediate && time < immediate + 0x10000 { raw = time - immediate }
+        else { raw = time - Int64(start) }
+        return Int(min(max(raw, 0), Int64(frames)))
+    }
+
+    /// Applies every event due at or before `upTo` and returns the first one still to come.
+    @discardableResult
+    func applyEvents(_ first: UnsafePointer<AURenderEvent>?, upTo: Int, start: Double, frames: Int,
+                     shared: SharedState) -> UnsafePointer<AURenderEvent>? {
+        var event = first
+        while let e = event {
+            if offset(of: e.pointee.head.eventSampleTime, start: start, frames: frames) > upTo { break }
+            let type = e.pointee.head.eventType
+            if type == .parameter || type == .parameterRamp { apply(e.pointee.parameter, shared: shared) }
+            event = UnsafePointer(e.pointee.head.next)
+        }
+        return event
+    }
+
+    /// A value now, or a ramp from the current value over the event's ramp duration.
+    @inline(__always) private func apply(_ ev: AUParameterEvent, shared: SharedState) {
+        let i = Int(ev.parameterAddress)
+        guard i >= 0 && i < count else { return }
+        let target = min(max(ev.value, lower[i]), upper[i])
+        let frames = Int(ev.rampDurationSampleFrames)
+        let bit: UInt32 = 1 << UInt32(i)
+        if frames > 1 && continuous[i] {
+            let from = shared.params[i]
+            rampValue[i] = from
+            rampTarget[i] = target
+            rampStepSize[i] = (target - from) / Float(frames)
+            rampLeft[i] = frames
+            rampMask |= bit
+        } else {
+            rampLeft[i] = 0
+            rampMask &= ~bit
+            shared.params[i] = target
+        }
+    }
+
+    /// Moves every running ramp on by `frames` and publishes the new values.
+    @inline(__always) func advanceRamps(by frames: Int, shared: SharedState) {
+        var m = rampMask
+        while m != 0 {
+            let i = m.trailingZeroBitCount
+            m &= m - 1
+            rampLeft[i] -= frames
+            if rampLeft[i] <= 0 {
+                rampValue[i] = rampTarget[i]
+                rampLeft[i] = 0
+                rampMask &= ~(UInt32(1) << UInt32(i))
+            } else {
+                rampValue[i] += rampStepSize[i] * Float(frames)
+            }
+            shared.params[i] = rampValue[i]
+        }
+    }
+
+    /// Off the audio thread (render resources being reset): forget ramps in progress.
+    func clearRamps() {
+        rampMask = 0
+        for i in 0..<count { rampLeft[i] = 0 }
     }
 
     func prepare(format: AVAudioFormat, frames: AUAudioFrameCount, shared: SharedState) {
         let count = Int(max(frames, 4_096))
         maxFrames = count
         dsp = ClipDSP(sampleRate: format.sampleRate, shared: shared)
+        clearRamps()
         spareR.deallocate()
         spareR = .allocate(capacity: count)
         spareR.initialize(repeating: 0, count: count)
@@ -302,14 +424,17 @@ final class RedClipRenderState: @unchecked Sendable {
         }
         inputBuffer = buffer
         inputList = buffer.mutableAudioBufferList
-        inputPointers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList).map { $0.mData }
+        let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        inputPointerCount = min(list.count, 2)
+        for i in 0..<inputPointerCount { inputPointers[i] = list[i].mData }
     }
 
     func release() {
         dsp = nil
         inputList = nil
         inputBuffer = nil
-        inputPointers = []
+        inputPointerCount = 0
+        clearRamps()
     }
 
     /// Audio thread: the host may have pointed our input buffers elsewhere last time; point them
@@ -318,7 +443,7 @@ final class RedClipRenderState: @unchecked Sendable {
         guard let inputList else { return }
         let list = UnsafeMutableAudioBufferListPointer(inputList)
         let bytes = frames * UInt32(MemoryLayout<Float>.size)
-        for i in 0..<list.count where i < inputPointers.count {
+        for i in 0..<list.count where i < inputPointerCount {
             list[i].mData = inputPointers[i]
             list[i].mDataByteSize = bytes
         }

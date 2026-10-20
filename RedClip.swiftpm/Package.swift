@@ -30,9 +30,16 @@ let package = Package(
             additionalInfoPlistContentFilePath: "Info.plist"
         )
     ],
+    dependencies: [
+        // Lock-free atomics for the values the audio thread and the UI share (SharedMemory.swift).
+        .package(url: "https://github.com/apple/swift-atomics.git", "1.2.0"..<"2.0.0")
+    ],
     targets: [
         .executableTarget(
             name: "AppModule",
+            dependencies: [
+                .product(name: "Atomics", package: "swift-atomics")
+            ],
             path: ".",
             exclude: [
                 "Info.plist"

@@ -23,7 +23,7 @@ final class MeterReader {
         let dt = Float(min(now.timeIntervalSince(last), 0.1))
         last = now
         let m = shared.meters
-        func take(_ i: Meter) -> Float { let v = m[i.rawValue]; m[i.rawValue] = 0; return v }
+        func take(_ i: Meter) -> Float { m.exchange(i.rawValue, 0) }   // read and clear in one atomic step
 
         let fall = pow(10, -24 * dt / 20)   // 24 dB/s release
         inL = max(take(.inPeakL), inL * fall); inR = max(take(.inPeakR), inR * fall)
@@ -181,8 +181,8 @@ struct WaveformView: View {
     var body: some View {
         TimelineView(.animation) { ctx in
             let _ = reader.update(ctx.date)
-            let scroll = reader.scroller.update(total: shared.waveTotal.pointee,
-                                                rate: Double(shared.waveRate.pointee), now: ctx.date)
+            let scroll = reader.scroller.update(total: shared.waveTotal.acquire(),
+                                                rate: Double(shared.waveRate.value), now: ctx.date)
             GeometryReader { geo in
                 let labelW: CGFloat = 62
                 let plot = CGRect(x: labelW, y: 46, width: geo.size.width - labelW - 18, height: geo.size.height - 70)
@@ -217,7 +217,7 @@ struct WaveformView: View {
 
     func draw(_ g: GraphicsContext, _ plot: CGRect, _ scroll: Double) {
         let n = SharedState.waveColumns
-        let total = shared.waveTotal.pointee
+        let total = shared.waveTotal.acquire()
         let visible = n - 8                                     // ~10 s across the screen
         let colW: CGFloat = plot.width / CGFloat(visible - 1)
         let mid: CGFloat = plot.minY + FaceScale.position(-18) * plot.height   // mirror line (the -18 mark)
