@@ -44,7 +44,7 @@ struct AppRootView: View {
 
     private var transportStrip: some View {
         ZStack(alignment: .topLeading) {
-            Image("RCStrip").resizable().interpolation(.high)
+            Image(face.theme.image("RCStrip")).resizable().interpolation(.high)
                 .frame(width: FaceplateView.size.width, height: stripHeight)
 
             // PLAY / PAUSE (spacebar too)
@@ -53,7 +53,7 @@ struct AppRootView: View {
                     Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 17, weight: .bold))
                     Text(audio.isPlaying ? "PAUSE" : "PLAY").font(.system(size: 16, weight: .semibold)).tracking(1.6)
                 }
-                .foregroundStyle(audio.isPlaying ? Plate.glowHot : Plate.text)
+                .foregroundStyle(audio.isPlaying ? Plate.glow : face.theme.text)
                 .frame(width: 115, height: 45).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -69,7 +69,7 @@ struct AppRootView: View {
 
             Text(audio.fileName)
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(Plate.text)
+                .foregroundStyle(face.theme.text)
                 .lineLimit(1)
                 .frame(width: 165, alignment: .leading)
                 .place(x: 607, y: 25, w: 165, h: 24)
@@ -115,7 +115,7 @@ struct AppRootView: View {
             Image(systemName: icon).font(.system(size: 16, weight: .semibold))
             Text(title).font(.system(size: 16, weight: .semibold)).tracking(1.6)
         }
-        .foregroundStyle(Plate.text)
+        .foregroundStyle(face.theme.text)
         .frame(width: 131, height: 45).contentShape(Rectangle())
     }
 

@@ -18,6 +18,13 @@ final class FaceModel: ObservableObject {
         }
     }
     @Published private(set) var helpTopic: HelpTopic?
+
+    /// Which finish the faceplate shows: Face1 (red) or Face1_platinum. Remembered between launches.
+    private static let faceKey = "RedClip.Faceplate"
+    @Published var faceplate: Faceplate = Faceplate(rawValue: UserDefaults.standard.string(forKey: FaceModel.faceKey) ?? "") ?? .face1 {
+        didSet { UserDefaults.standard.set(faceplate.rawValue, forKey: Self.faceKey) }
+    }
+    var theme: PlateTheme { faceplate == .face1Platinum ? .platinum : .red }
     private var helpHide: DispatchWorkItem?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?

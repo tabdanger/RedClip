@@ -12,6 +12,8 @@ struct FaceplateView: View {
 
     static let size = CGSize(width: 1448, height: 997)
 
+    private var theme: PlateTheme { face.theme }
+
     // knob centres in the picture
     static let bigKnobs: [(Param, CGPoint, HelpTopic)] = [
         (.inputDB, CGPoint(x: 208.9, y: 581.5), .input),
@@ -25,7 +27,7 @@ struct FaceplateView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Image("RCPlate")
+            Image(theme.image("RCPlate"))
                 .resizable()
                 .interpolation(.high)
                 .frame(width: Self.size.width, height: Self.size.height)
@@ -72,6 +74,14 @@ struct FaceplateView: View {
                     ForEach(Preset.factory.indices, id: \.self) { i in
                         Button(Preset.factory[i].name) { params.apply(i) }
                     }
+                }
+                Section("Settings") {
+                    Picker(selection: $face.faceplate) {
+                        ForEach(Faceplate.allCases, id: \.self) { f in Text(f.title).tag(f) }
+                    } label: {
+                        Label("Faceplate", systemImage: "paintbrush")
+                    }
+                    .pickerStyle(.menu)
                 }
             } label: {
                 Text(params.presetName)
@@ -136,10 +146,10 @@ struct FaceplateView: View {
     private func abCell(_ letter: String, on: Bool, x: CGFloat, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             ZStack {
-                Image(on ? "RCABLit" : "RCABOff").resizable()
+                Image(theme.image(on ? "RCABLit" : "RCABOff")).resizable()
                 Text(letter)
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(on ? Plate.glow : Plate.textDim)
+                    .foregroundStyle(on ? Plate.glow : theme.textDim)
                     .shadow(color: on ? Plate.glow.opacity(0.8) : .clear, radius: 5)
             }
             .frame(width: 57, height: 51).contentShape(Rectangle())
@@ -171,10 +181,10 @@ struct FaceplateView: View {
             ForEach(Self.bigKnobs.indices, id: \.self) { i in
                 let item = Self.bigKnobs[i]
                 PlateKnob(value: params.binding(item.0), range: item.0.range, defaultValue: item.0.defaultValue,
-                          capRadius: 56, pointerFrom: 34, pointerTo: 53, pointerWidth: 5)
+                          capRadius: 56, pointerFrom: 34, pointerTo: 53, pointerWidth: 5, theme: theme)
                     .helpTarget(item.2, face)
                     .place(x: item.1.x - 80, y: item.1.y - 80, w: 160, h: 160)
-                PlateValue(text: Self.valueText(item.0, params[item.0]), size: 21)
+                PlateValue(text: Self.valueText(item.0, params[item.0]), size: 21, theme: theme)
                     .place(x: item.1.x - 70, y: 676, w: 140, h: 30)
             }
         }
@@ -193,27 +203,27 @@ struct FaceplateView: View {
     private var redRow: some View {
         ZStack(alignment: .topLeading) {
             PlateKnob(value: params.binding(.gold), range: Param.gold.range, defaultValue: 0,
-                      capRadius: 31, pointerFrom: 17, pointerTo: 29, pointerWidth: 4)
+                      capRadius: 31, pointerFrom: 17, pointerTo: 29, pointerWidth: 4, theme: theme)
                 .helpTarget(.red, face)
                 .place(x: Self.redKnob.x - 48, y: Self.redKnob.y - 48, w: 96, h: 96)
-            PlateValue(text: Fmt.pct(params[.gold]), size: 15)
+            PlateValue(text: Fmt.pct(params[.gold]), size: 15, theme: theme)
                 .place(x: Self.redKnob.x - 36, y: 845, w: 72, h: 24)
 
             PlateSegments(cells: [("MODERN", 282, 387), ("CLASSIC", 387, 490)], y: 758, h: 33,
-                          selection: params.binding(.goldMode), fontSize: 14)
+                          selection: params.binding(.goldMode), fontSize: 14, theme: theme)
                 .helpTarget(.redStyle, face).place(x: 282, y: 758, w: 208, h: 33)
-            PlateToggle(title: "UNITY GAIN", icon: nil, isOn: params.flag(.unity), fontSize: 15, offColor: Plate.text)
+            PlateToggle(title: "UNITY GAIN", icon: nil, isOn: params.flag(.unity), fontSize: 15, offColor: theme.text)
                 .helpTarget(.unity, face).place(x: 312, y: 808, w: 152, h: 35)
 
             PlateKnob(value: params.binding(.alchemy), range: Param.alchemy.range, defaultValue: 0,
-                      capRadius: 31, pointerFrom: 17, pointerTo: 29, pointerWidth: 4)
+                      capRadius: 31, pointerFrom: 17, pointerTo: 29, pointerWidth: 4, theme: theme)
                 .helpTarget(.fire, face)
                 .place(x: Self.fireKnob.x - 48, y: Self.fireKnob.y - 48, w: 96, h: 96)
-            PlateValue(text: Fmt.pct(params[.alchemy]), size: 15)
+            PlateValue(text: Fmt.pct(params[.alchemy]), size: 15, theme: theme)
                 .place(x: Self.fireKnob.x - 36, y: 845, w: 72, h: 24)
 
             PlateSegments(cells: [("FLAT", 820, 912), ("MODERN", 912, 1013), ("CLASSIC", 1013, 1116)], y: 792, h: 40,
-                          selection: params.binding(.boxTone), fontSize: 14)
+                          selection: params.binding(.boxTone), fontSize: 14, theme: theme)
                 .helpTarget(.boxTone, face).place(x: 820, y: 792, w: 296, h: 40)
             PlateToggle(title: "DELTA", icon: "triangle", isOn: params.flag(.delta), fontSize: 16, offColor: Plate.glow)
                 .helpTarget(.delta, face).place(x: 1180, y: 794, w: 133, h: 40)
@@ -225,17 +235,55 @@ struct FaceplateView: View {
     private var bottomRow: some View {
         ZStack(alignment: .topLeading) {
             PlateSegments(cells: [("HARD", 123, 243), ("CLASSIC", 243, 363), ("MODERN", 363, 486)], y: 922, h: 46,
-                          selection: params.binding(.clipMode), fontSize: 16)
+                          selection: params.binding(.clipMode), fontSize: 16, theme: theme)
                 .helpTarget(.clipMode, face).place(x: 123, y: 922, w: 363, h: 46)
             PlateToggle(title: "LINK", icon: "link", isOn: params.flag(.link), fontSize: 17, offColor: Plate.glow)
                 .helpTarget(.link, face).place(x: 567, y: 908, w: 123, h: 50)
             PlateSegments(cells: [("1X", 767, 877), ("2X", 877, 982), ("4X", 982, 1093)], y: 922, h: 44,
-                          selection: params.binding(.oversampling), fontSize: 16)
+                          selection: params.binding(.oversampling), fontSize: 16, theme: theme)
                 .helpTarget(.oversampling, face).place(x: 767, y: 922, w: 326, h: 44)
-            PlateBypass(isOn: params.flag(.bypass))
+            PlateBypass(isOn: params.flag(.bypass), theme: theme)
                 .helpTarget(.bypass, face).place(x: 1162, y: 907, w: 165, h: 51)
         }
     }
+}
+
+// MARK: - Faceplate finishes
+
+/// Face1 is the red picture; Face1_platinum is the same face in a platinum finish.
+enum Faceplate: String, CaseIterable {
+    case face1 = "Face1"
+    case face1Platinum = "Face1_platinum"
+
+    var title: String { self == .face1 ? "Face1 (Red)" : "Face1 Platinum" }
+}
+
+/// What changes between finishes: the pictures and the colour of the printed legends.
+struct PlateTheme {
+    let suffix: String              // asset-name suffix, "" or "Platinum"
+    let text: Color                 // values, unlit legends
+    let textDim: Color              // unselected A/B letter
+    let litText: Color              // legend on a lit red cell
+    let textShadow: Color
+    let pointer: [Color]            // knob pointer gradient
+
+    func image(_ base: String) -> String { base + suffix }
+
+    static let red = PlateTheme(
+        suffix: "",
+        text: Color(red: 0.97, green: 0.94, blue: 0.93),
+        textDim: Color(white: 0.72),
+        litText: Color(red: 0.32, green: 0.02, blue: 0.03),
+        textShadow: .black.opacity(0.45),
+        pointer: [Color(red: 1, green: 0.97, blue: 0.9), Color(red: 0.86, green: 0.82, blue: 0.75)])
+
+    static let platinum = PlateTheme(
+        suffix: "Platinum",
+        text: Color(red: 0.13, green: 0.13, blue: 0.14),
+        textDim: Color(white: 0.3),
+        litText: Color(red: 1, green: 0.96, blue: 0.95),
+        textShadow: .white.opacity(0.5),
+        pointer: [Color(white: 0.12), Color(white: 0.02)])
 }
 
 // MARK: - Colours and layout helpers
@@ -273,6 +321,7 @@ struct PlateKnob: View {
     let pointerFrom: CGFloat
     let pointerTo: CGFloat
     let pointerWidth: CGFloat
+    let theme: PlateTheme
     @State var dragStart: Float?
 
     var body: some View {
@@ -283,8 +332,7 @@ struct PlateKnob: View {
         ZStack {
             Color.clear
             Capsule()
-                .fill(LinearGradient(colors: [Color(red: 1, green: 0.97, blue: 0.9), Color(red: 0.86, green: 0.82, blue: 0.75)],
-                                     startPoint: .top, endPoint: .bottom))
+                .fill(LinearGradient(colors: theme.pointer, startPoint: .top, endPoint: .bottom))
                 .frame(width: pointerWidth, height: length)
                 .shadow(color: .black.opacity(0.55), radius: 1, x: 0.5, y: 1)
                 .offset(y: -mid)
@@ -309,12 +357,13 @@ struct PlateKnob: View {
 struct PlateValue: View {
     let text: String
     let size: CGFloat
+    let theme: PlateTheme
     var body: some View {
         Text(text)
             .font(.system(size: size, weight: .medium))
             .monospacedDigit()
-            .foregroundStyle(Plate.text)
-            .shadow(color: .black.opacity(0.45), radius: 1, y: 1)
+            .foregroundStyle(theme.text)
+            .shadow(color: theme.textShadow, radius: 1, y: 1)
             .lineLimit(1)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
@@ -330,6 +379,7 @@ struct PlateSegments: View {
     let h: CGFloat
     @Binding var selection: Float
     let fontSize: CGFloat
+    let theme: PlateTheme
 
     var body: some View {
         let x0: CGFloat = cells.first?.1 ?? 0
@@ -345,11 +395,11 @@ struct PlateSegments: View {
         let on = Int(selection.rounded()) == i
         return Button { selection = Float(i) } label: {
             ZStack {
-                Image(on ? "RCSegLit" : "RCSegOff").resizable()
+                Image(theme.image(on ? "RCSegLit" : "RCSegOff")).resizable()
                 Text(label)
                     .font(.system(size: fontSize, weight: .semibold))
                     .tracking(fontSize * 0.12)
-                    .foregroundStyle(on ? Plate.litText : Plate.text)
+                    .foregroundStyle(on ? theme.litText : theme.text)
             }
             .frame(width: r - l, height: h).contentShape(Rectangle())
         }
@@ -390,6 +440,7 @@ struct PlateToggle: View {
 /// Bypass: LED dot + legend (the button body is in the picture).
 struct PlateBypass: View {
     @Binding var isOn: Bool
+    let theme: PlateTheme
     var body: some View {
         Button { isOn.toggle() } label: {
             HStack(spacing: 18) {
@@ -400,7 +451,7 @@ struct PlateBypass: View {
                     .frame(width: 17, height: 17)
                     .shadow(color: isOn ? Plate.glow : .black.opacity(0.5), radius: isOn ? 7 : 1)
                 Text("BYPASS").font(.system(size: 17, weight: .semibold)).tracking(2.4)
-                    .foregroundStyle(Plate.text)
+                    .foregroundStyle(theme.text)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
         }
