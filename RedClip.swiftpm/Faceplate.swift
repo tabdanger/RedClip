@@ -167,12 +167,12 @@ struct FaceplateView: View {
 
     private var displays: some View {
         ZStack(alignment: .topLeading) {
-            PlateMeters(reader: face.meters, isInput: true)
+            PlateMeters(shared: face.shared, state: face.meters.stereo, isInput: true)
                 .helpTarget(.inputMeter, face).place(x: 111, y: 148, w: 72, h: 251)
-            PlateMeters(reader: face.meters, isInput: false)
+            PlateMeters(shared: face.shared, state: face.meters.stereo, isInput: false)
                 .helpTarget(.outputMeter, face).place(x: 1224, y: 148, w: 75, h: 251)
-            PlateScreen(shared: face.shared, ceilingDB: params[.ceilingDB], reader: face.meters)
-                .helpTarget(.screen, face).place(x: 268, y: 126, w: 914, h: 260)
+            PlateScreen(shared: face.shared, ceilingDB: params[.ceilingDB])
+                .helpTarget(.screen, face).place(x: 273, y: 128, w: 910, h: 258)
             PlateClipNumber(reader: face.meters)
                 .helpTarget(.clipReadout, face).place(x: 591, y: 402, w: 266, h: 53)
         }
@@ -463,90 +463,202 @@ struct PlateBypass: View {
     }
 }
 
-// MARK: - Meters (two LED columns in the picture's slots)
+// MARK: - Meters (from the RED CLIP animation pack: RMS-style LEDs with a separate peak hold)
 
+/// Level detectors for the four LED strips: ~20 ms RMS window, 40 ms rise / 250 ms fall smoothing,
+/// peak markers that hold for 600 ms and then fall at 20 dB/s. Fed from the audio thread's
+/// sample rings (input after the Input knob, final output). These are digital RMS-style level
+/// meters, not calibrated analog VU meters.
+final class StereoMeterState {
+    private(set) var levels = [Double](repeating: 0, count: 4)     // inL, inR, outL, outR (linear RMS)
+    private(set) var hold = [Double](repeating: -60, count: 4)     // dBFS
+    private var timers = [Double](repeating: 0, count: 4)
+    private var last: Date?
+    private var lastTotal = -1
+
+    func update(_ shared: SharedState, now: Date) {
+        let dt = min(max(now.timeIntervalSince(last ?? now), 0), 0.1)
+        if let last, now.timeIntervalSince(last) < 0.008 { return }      // once per frame
+        last = now
+        let total = shared.ringTotal.pointee
+        let moving = total != lastTotal
+        lastTotal = total
+        let window = max(1, Int(Double(shared.sampleRate.pointee) * 0.02))
+        let rings = [shared.meterInL, shared.meterInR, shared.meterOutL, shared.meterOutR]
+        for n in 0..<4 {
+            var sum: Double = 0, peak: Double = 0
+            if moving {
+                for k in 0..<window {
+                    let v = Double(rings[n][(total - 1 - k) & SharedState.ringMask])
+                    sum += v * v
+                    peak = max(peak, abs(v))
+                }
+            }
+            let rms = (sum / Double(window)).squareRoot()
+            let coeff = exp(-dt / (rms > levels[n] ? 0.04 : 0.25))
+            levels[n] = coeff * levels[n] + (1 - coeff) * rms
+            let pdb = 20 * log10(max(peak, 1e-6))
+            timers[n] = max(0, timers[n] - dt)
+            if timers[n] == 0 { hold[n] -= 20 * dt }
+            if pdb >= hold[n] { hold[n] = pdb; timers[n] = 0.6 }
+            hold[n] = max(hold[n], -80)
+        }
+    }
+}
+
+/// Two LED strips in the picture's meter slots. Positions are the faceplate pixels used by the
+/// animation pack (strip x ranges, and the 24 segment rows).
 struct PlateMeters: View {
-    let reader: MeterReader
+    let shared: SharedState
+    let state: StereoMeterState
     let isInput: Bool
-    private let segments = 24
+
+    /// The view sits at x 111 (input) / 1224 (output), y 148 in the picture.
+    static let originX: (input: CGFloat, output: CGFloat) = (111, 1224)
+    static let originY: CGFloat = 148
+    static let strips: [(CGFloat, CGFloat)] = [(115, 135), (157, 176), (1231, 1250), (1274, 1292)]
+    static let slots: [(CGFloat, CGFloat)] = [(154, 160), (166, 169), (175, 179), (183, 188), (193, 197), (202, 208),
+        (210, 216), (220, 226), (229, 236), (240, 245), (250, 256), (260, 266), (270, 276), (281, 286),
+        (291, 297), (301, 307), (312, 317), (322, 327), (332, 338), (342, 348), (353, 359), (362, 369),
+        (373, 379), (383, 390)]
+    /// The face's scale marks: pixel rows for 0, -6, -12, -18, -24, -36, -60 dB.
+    static let markY: [CGFloat] = [154, 201, 244, 285, 328, 371, 390]
+    static let markDB: [CGFloat] = [0, -6, -12, -18, -24, -36, -60]
+
+    static func dbAt(y: CGFloat) -> CGFloat { interp(y, markY, markDB) }
+    static func yAt(db: CGFloat) -> CGFloat { interp(db, markDB.reversed(), markY.reversed()) }
+    static func interp(_ v: CGFloat, _ xs: [CGFloat], _ ys: [CGFloat]) -> CGFloat {
+        if v <= xs[0] { return ys[0] }
+        for i in 1..<xs.count where v <= xs[i] {
+            return ys[i - 1] + (ys[i] - ys[i - 1]) * (v - xs[i - 1]) / (xs[i] - xs[i - 1])
+        }
+        return ys[ys.count - 1]
+    }
 
     var body: some View {
         TimelineView(.animation) { ctx in
-            let _ = reader.update(ctx.date)
-            let l = isInput ? reader.inL : reader.outL
-            let r = isInput ? reader.inR : reader.outR
-            let hold = isInput ? reader.inHold : reader.outHold
-            let over = isInput ? reader.clipLit : hold >= 0.999
-            Canvas { g, size in
-                // the two slots: 32 px wide at the left and right edges (as in the picture)
-                let slotW: CGFloat = 32
-                draw(g, CGRect(x: 0, y: 0, width: slotW, height: size.height), level: l, hold: hold, over: over)
-                draw(g, CGRect(x: size.width - slotW, y: 0, width: slotW, height: size.height), level: r, hold: hold, over: over)
-            }
-        }
-    }
-
-    private func draw(_ ctx: GraphicsContext, _ slot: CGRect, level g: Float, hold: Float, over: Bool) {
-        let inner = slot.insetBy(dx: 3, dy: 3)
-        ctx.fill(Path(roundedRect: inner, cornerRadius: 3), with: .color(Color.black))
-        let level: CGFloat = 1 - FaceScale.position(gainToDB(g))
-        let holdLevel: CGFloat = 1 - FaceScale.position(gainToDB(hold))
-        let n = CGFloat(segments)
-        let padY: CGFloat = 5, gap: CGFloat = 2.6
-        let segH: CGFloat = (inner.height - 2 * padY - gap * (n - 1)) / n
-        let holdIdx = Int((holdLevel * n).rounded(.up)) - 1
-        for idx in 0..<segments {
-            let lo = CGFloat(idx) / n
-            let fill: CGFloat = min(max((level - lo) * n, 0), 1)
-            let top = idx >= segments - 3
-            let y: CGFloat = inner.maxY - padY - CGFloat(idx + 1) * segH - CGFloat(idx) * gap
-            let rect = CGRect(x: inner.minX + 4, y: y, width: inner.width - 8, height: segH)
-            let shape = Path(roundedRect: rect, cornerRadius: 1.5)
-            ctx.fill(shape, with: .color(Color(red: 0.26, green: 0.03, blue: 0.04)))
-            var lit: CGFloat = fill
-            if idx == holdIdx && holdLevel > 0.02 { lit = max(lit, 0.9) }
-            if top && over { lit = 1 }
-            if lit > 0 {
-                var glow = ctx
-                glow.addFilter(.shadow(color: Plate.glow.opacity(Double(0.8 * lit)), radius: 4))
-                let c = top ? (over ? Color.white : Plate.glowHot) : Color(red: 1, green: 0.1, blue: 0.1)
-                glow.fill(shape, with: .color(c.opacity(Double(0.25 + 0.75 * lit))))
+            let _ = state.update(shared, now: ctx.date)
+            Canvas { g, _ in
+                let ox = isInput ? Self.originX.input : Self.originX.output
+                let oy = Self.originY
+                for n in (isInput ? 0..<2 : 2..<4) {
+                    let (x0, x1) = Self.strips[n]
+                    let db = 20 * log10(max(state.levels[n], 1e-6))
+                    g.fill(Path(CGRect(x: x0 - 1 - ox, y: 152 - oy, width: x1 - x0 + 3, height: 242)),
+                           with: .color(Color(red: 0.039, green: 0.027, blue: 0.031)))
+                    for (y0, y1) in Self.slots {
+                        let threshold = Self.dbAt(y: (y0 + y1) / 2)
+                        let active = CGFloat(db) >= threshold
+                        let rect = CGRect(x: x0 - ox, y: y0 - oy, width: x1 - x0 + 1, height: y1 - y0 + 1)
+                        let grad = Gradient(stops: [
+                            .init(color: active ? Color(hex: 0x962025) : Color(hex: 0x20080b), location: 0),
+                            .init(color: active ? Color(hex: 0xf51518) : Color(hex: 0x2a080b), location: 0.5),
+                            .init(color: active ? Color(hex: 0x960608) : Color(hex: 0x1e0609), location: 1)])
+                        g.fill(Path(rect), with: .linearGradient(grad, startPoint: CGPoint(x: 0, y: rect.minY),
+                                                                 endPoint: CGPoint(x: 0, y: rect.maxY)))
+                        g.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 1)),
+                               with: .color(active ? Color(hex: 0xff393f) : Color(hex: 0x3a0f12)))
+                    }
+                    let py = Self.yAt(db: CGFloat(min(max(state.hold[n], -60), 0)))
+                    g.fill(Path(CGRect(x: x0 - ox, y: py - oy, width: x1 - x0 + 1, height: 2)),
+                           with: .color(Color(hex: 0xff8587)))
+                }
             }
         }
     }
 }
 
-// MARK: - Screen (the picture's glass and dB labels stay; the trace is drawn over them)
+// MARK: - Screen (from the RED CLIP animation pack: time-aligned input vs clipped output)
 
+/// Oscilloscope over the picture's screen: the last 120 ms of the signal going into the clipper
+/// (grey) and the clipped output (red, filled), on a linear bipolar amplitude axis with the
+/// +/- ceiling dashed. Fed from the audio thread's sample rings; nothing here touches the audio.
 struct PlateScreen: View {
     let shared: SharedState
     let ceilingDB: Float
-    let reader: MeterReader
 
-    // the plot inside this view (the view sits at x 268, y 126 in the picture):
-    // 0 dB line at y 162, -60 at y 371, traces from x 317 to 1167
-    static let plot = CGRect(x: 317 - 268, y: 162 - 126, width: 1167 - 317, height: 371 - 162)
+    static let points = 1300
+    // layout in the scope's own 910 x 258 space (the view sits at x 273, y 128 in the picture)
+    static let left: CGFloat = 57, right: CGFloat = 891, cy: CGFloat = 133, scale: CGFloat = 56
 
     var body: some View {
-        TimelineView(.animation) { ctx in
-            let _ = reader.update(ctx.date)
-            let scroll = reader.scroller.update(total: shared.waveTotal.pointee,
-                                                rate: Double(shared.waveRate.pointee), now: ctx.date)
-            let screen = WaveformView(shared: shared, ceilingDB: ceilingDB, reader: reader)
-            let labelY: CGFloat = Self.plot.minY + FaceScale.position(ceilingDB) * Self.plot.height - 14
-            ZStack(alignment: .topLeading) {
-                Canvas { g, _ in screen.draw(g, Self.plot, scroll) }
-                Text(String(format: "CEILING  %.1f dB", ceilingDB))
-                    .font(.system(size: 14, weight: .bold))
-                    .tracking(1.2)
-                    .underline(color: Plate.glow)
-                    .foregroundStyle(reader.reduction > 0.05 ? Plate.glowHot : Plate.glow)
-                    .shadow(color: Plate.glow.opacity(0.9), radius: 3 + CGFloat(min(reader.reduction, 6)) * 1.5)
-                    .fixedSize()
-                    .position(x: Self.plot.maxX - 64, y: labelY)
+        TimelineView(.animation) { _ in
+            Canvas { g, size in
+                let sx = size.width / 910, sy = size.height / 258
+                g.scaleBy(x: sx, y: sy)
+                draw(g)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .allowsHitTesting(true)
+    }
+
+    private func draw(_ c: GraphicsContext) {
+        let L = Self.left, R = Self.right, cy = Self.cy, k = Self.scale
+        c.fill(Path(CGRect(x: 0, y: 0, width: 910, height: 258)), with: .color(Color(hex: 0x0b0c0e)))
+        c.fill(Path(CGRect(x: 0, y: 0, width: 910, height: 258)),
+               with: .radialGradient(Gradient(colors: [Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0.07),
+                                                       Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0)]),
+                                     center: CGPoint(x: 90, y: 25), startRadius: 1, endRadius: 260))
+        // amplitude grid + labels
+        for step in 0...6 {
+            let v = -1.5 + Double(step) * 0.5
+            let y = cy - CGFloat(v) * k
+            var p = Path(); p.move(to: CGPoint(x: L, y: y)); p.addLine(to: CGPoint(x: R, y: y))
+            c.stroke(p, with: .color(v == 0 ? Color(hex: 0x292a2c) : Color(hex: 0x191a1c)), lineWidth: 1)
+            let label = v == 0 ? "0" : (v > 0 ? "+" : "") + String(format: "%.1f", v)
+            c.draw(Text(label).font(.system(size: 11)).foregroundColor(Color(hex: 0x898d93)),
+                   at: CGPoint(x: 9, y: y), anchor: .leading)
+        }
+        for j in 0...12 {
+            let x = L + (R - L) * CGFloat(j) / 12
+            var p = Path(); p.move(to: CGPoint(x: x, y: 42)); p.addLine(to: CGPoint(x: x, y: 244))
+            c.stroke(p, with: .color(Color(hex: 0x18191b)), lineWidth: 1)
+        }
+        // +/- ceiling
+        let ceil = CGFloat(dbToGain(ceilingDB))
+        for sgn: CGFloat in [-1, 1] {
+            var p = Path(); p.move(to: CGPoint(x: L, y: cy - sgn * ceil * k)); p.addLine(to: CGPoint(x: R, y: cy - sgn * ceil * k))
+            c.stroke(p, with: .color(Color(hex: 0x91282b)), style: StrokeStyle(lineWidth: 1, dash: [6, 7]))
+        }
+        c.draw(Text("INPUT").font(.system(size: 13)).foregroundColor(Color(hex: 0xb3b9c2)), at: CGPoint(x: 12, y: 15), anchor: .leading)
+        c.draw(Text("CLIPPED OUTPUT").font(.system(size: 13)).foregroundColor(Color(hex: 0xff4145)), at: CGPoint(x: 80, y: 15), anchor: .leading)
+        c.draw(Text(String(format: "CEILING  %.1f dB", ceilingDB)).font(.system(size: 13)).foregroundColor(Color(hex: 0xff4145)),
+               at: CGPoint(x: 700, y: 15), anchor: .leading)
+
+        // the newest 120 ms from the rings
+        let total = shared.ringTotal.pointee
+        let span = max(2, min(SharedState.ringSize - 8, Int(Double(shared.sampleRate.pointee) * 0.12)))
+        let n = Self.points
+        if total > 4 {
+            let newest = total - 1
+            func sample(_ ring: UnsafeMutablePointer<Float>, _ i: Int) -> CGFloat {
+                let back = span - 1 - (i * (span - 1)) / (n - 1)
+                let v = CGFloat(ring[(newest - back) & SharedState.ringMask])
+                return max(min(v, 2.2), -2.2)        // keep the trace on the glass
+            }
+            func path(_ ring: UnsafeMutablePointer<Float>) -> Path {
+                var p = Path()
+                for i in 0..<n {
+                    let pt = CGPoint(x: L + (R - L) * CGFloat(i) / CGFloat(n - 1), y: cy - sample(ring, i) * k)
+                    if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+                }
+                return p
+            }
+            let out = path(shared.scopePost)
+            var fill = out
+            fill.addLine(to: CGPoint(x: R, y: cy)); fill.addLine(to: CGPoint(x: L, y: cy)); fill.closeSubpath()
+            c.fill(fill, with: .color(Color(hex: 0x390f13)))
+            c.stroke(path(shared.scopePre), with: .color(Color(hex: 0x89929f)), lineWidth: 2)
+            c.stroke(out, with: .color(Color(hex: 0xff3d42)), lineWidth: 3)
+        }
+        c.draw(Text("AMPLITUDE").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: 12, y: 242), anchor: .leading)
+        c.draw(Text("120 ms").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: 770, y: 242), anchor: .leading)
+    }
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255, blue: Double(hex & 0xff) / 255)
     }
 }
 

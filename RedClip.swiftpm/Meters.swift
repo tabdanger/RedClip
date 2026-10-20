@@ -13,6 +13,7 @@ final class MeterReader {
     private var holdUntilIn = Date.distantPast, holdUntilOut = Date.distantPast
     private var last = Date.distantPast
     let scroller = WaveScroller()
+    let stereo = StereoMeterState()
 
     init(shared: SharedState) { self.shared = shared }
 

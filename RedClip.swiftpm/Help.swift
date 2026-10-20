@@ -24,7 +24,8 @@ enum HelpTopic: String, CaseIterable {
         case .power: return "Power"
         case .inputMeter: return "Input Meter"
         case .outputMeter: return "Output Meter"
-        case .screen: return "Screen"
+        case .screen:
+            return "The last 120 ms of audio. Grey is the signal going into the clipper, red is the clipped output, both lined up in time. The dashed lines are the ceiling, above and below zero: anything grey poking past them is what gets clipped off."
         case .clipReadout: return "Clip"
         case .input: return "Input"
         case .drive: return "Drive"
@@ -62,9 +63,9 @@ enum HelpTopic: String, CaseIterable {
         case .power:
             return "Turns the Red Clip engine off. In a DAW the audio passes straight through untouched and uses no CPU."
         case .inputMeter:
-            return "Peak level coming in, left and right, after the Input knob. The marker above the bar holds the last peak."
+            return "Level coming in, left and right, after the Input knob. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment."
         case .outputMeter:
-            return "Peak level going out, left and right. The top lights flash white when the output reaches 0 dB."
+            return "Level going out, left and right. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment."
         case .screen:
             return "The last 10 seconds of audio. The dim trace is what goes into the clipper and the bright trace is the output. Anything above the dashed ceiling line glows white and lights up the line: that's the part being clipped off."
         case .clipReadout:
