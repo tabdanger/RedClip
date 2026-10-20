@@ -22,21 +22,22 @@ final class ScopeReader {
     private(set) var lastTotal = -1
     private(set) var lastCleared = -1
 
-    /// Reads the newest window into `n` columns. Returns false when nothing changed since the
-    /// last call (paused, or the same audio), so the caller can skip work.
+    /// Reads the newest window into about `wanted` columns (exactly as many as fit ~120 ms in
+    /// whole samples per column; `columns` says how many). Returns false when nothing changed
+    /// since the last call (paused, or the same audio), so the caller can skip work.
     @discardableResult
-    func update(_ shared: SharedState, columns n: Int) -> Bool {
-        let n = max(1, n)
-        if n != columns { resize(n) }
-        let total = shared.ringTotal.acquire()          // samples before this are complete
-        let cleared = shared.scopeClearedAt.value
-        if total == lastTotal && cleared == lastCleared && n == columns && lastTotal >= 0 { return false }
-        lastTotal = total; lastCleared = cleared
-
+    func update(_ shared: SharedState, columns wanted: Int) -> Bool {
         let rate = Double(max(shared.sampleRate.value, 8_000))
         let span = min(SharedState.ringSize - 64, Int(rate * Self.window))
-        let per = max(1, span / n)
+        let per = max(1, Int((Double(span) / Double(max(1, min(wanted, span)))).rounded()))
+        let n = max(1, span / per)
+        if n != columns { resize(n) }
         samplesPerColumn = per
+        let total = shared.ringTotal.acquire()          // samples before this are complete
+        let cleared = shared.scopeClearedAt.value
+        if total == lastTotal && cleared == lastCleared && lastTotal >= 0 { return false }
+        lastTotal = total; lastCleared = cleared
+
         let end = (total / per) * per
         let start = end - per * n
         let mask = SharedState.ringMask
