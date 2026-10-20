@@ -92,14 +92,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             > "$RUNNER_TEMP/tests.log" 2>&1 || true
           python3 "$GITHUB_WORKSPACE/.github/scripts/annotate.py" "$RUNNER_TEMP/tests.log" "Tests"
-          grep -E "^Test Case .*(passed|failed)" "$RUNNER_TEMP/tests.log" | while read -r line; do
-            name=$(echo "$line" | sed -E "s/.*-\[[A-Za-z]+ ([A-Za-z0-9_]+)\].*/\1/")
-            if echo "$line" | grep -q passed; then echo "::notice title=Test passed::$name"; else echo "::error title=Test failed::$name"; fi
-          done
-          grep -E "error: .*XCT|XCTAssert.*failed" "$RUNNER_TEMP/tests.log" | head -20 | while read -r line; do echo "::error title=Assertion::$line"; done
-          if grep -q "ThreadSanitizer" "$RUNNER_TEMP/tests.log"; then
-            REPORT=$(grep -A14 "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" | head -40 | tr '\n' '|' | sed 's/%/%25/g')
-            echo "::error title=Thread Sanitizer::$REPORT"
+          # one line per test, all in one annotation (GitHub keeps only 10 per step)
+          RESULTS=$(grep -E "^Test Case .*(passed|failed) \(" "$RUNNER_TEMP/tests.log" \
+            | sed -E "s/^Test Case '-\[[A-Za-z]+\.[A-Za-z]+ ([A-Za-z0-9_]+)\]' (passed|failed).*/\2: \1/" | tr '\n' '|')
+          echo "::notice title=Test results::$RESULTS"
+          grep -E "error: .*: (XCT|failed)" "$RUNNER_TEMP/tests.log" | head -8 | while read -r line; do echo "::error title=Assertion::$line"; done
+          RACES=$(grep -c "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" || true)
+          if [ "$RACES" != "0" ]; then
+            grep -A16 "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" | head -60 | tr '\n' '|' | sed 's/%/%25/g' \
+              | fold -w 3000 | head -3 | while read -r chunk; do echo "::error title=Thread Sanitizer ($RACES reports)::$chunk"; done
             exit 1
           fi
           echo "::notice title=Thread Sanitizer::No data races reported."
