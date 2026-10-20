@@ -201,7 +201,7 @@ final class AutomationTests: XCTestCase {
         let ramped = try Harness(), jumped = try Harness()
         ramped.render(512); jumped.render(512)
         ramped.shared[.driveDB] = 9; jumped.shared[.driveDB] = 9
-        ramped.render(2048); jumped.render(2048)            // let Drive settle in both
+        for _ in 0..<2 { ramped.render(1024); jumped.render(1024) }   // let Drive settle in both
 
         ramped.schedule(.clipMode, 0, atOffset: 40, ramp: 200)
         jumped.schedule(.clipMode, 0, atOffset: 40)

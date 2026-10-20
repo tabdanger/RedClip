@@ -96,6 +96,7 @@ jobs:
           RESULTS=$(grep -E "^Test Case .*(passed|failed) \(" "$RUNNER_TEMP/tests.log" \
             | sed -E "s/^Test Case '-\[[A-Za-z]+\.[A-Za-z]+ ([A-Za-z0-9_]+)\]' (passed|failed).*/\2: \1/" | tr '\n' '|')
           echo "::notice title=Test results::$RESULTS"
+          grep -E "Fatal error|Precondition failed|crashed|unexpected exit" "$RUNNER_TEMP/tests.log" | head -4 | while read -r line; do echo "::error title=Crash::$line"; done
           grep -E "error: .*: (XCT|failed)" "$RUNNER_TEMP/tests.log" | head -8 | while read -r line; do echo "::error title=Assertion::$line"; done
           RACES=$(grep -c "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" || true)
           if [ "$RACES" != "0" ]; then
