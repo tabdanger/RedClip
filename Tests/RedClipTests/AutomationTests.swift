@@ -19,6 +19,8 @@ final class Harness: @unchecked Sendable {
     private let pull: AURenderPullInputBlock
     /// Sample time of the next block (only the thread that renders touches it).
     private(set) var time: Double = 0
+    /// 1 = the "track" goes silent.
+    let mute = AtomicInt(0)
 
     init() throws {
         let desc = AudioComponentDescription(componentType: kAudioUnitType_Effect,
@@ -31,12 +33,14 @@ final class Harness: @unchecked Sendable {
         try unit.allocateRenderResources()
         block = unit.renderBlock
         list = AudioBufferList.allocate(maximumBuffers: 2)
+        let mute = self.mute
         pull = { _, timestamp, frames, _, abl in
+            let silent = mute.value != 0
             let buffers = UnsafeMutableAudioBufferListPointer(abl)
             let t0 = Int(timestamp.pointee.mSampleTime)
             for c in 0..<buffers.count {
                 guard let p = buffers[c].mData?.assumingMemoryBound(to: Float.self) else { continue }
-                for i in 0..<Int(frames) { p[i] = Harness.signal(t0 + i, channel: c) }
+                for i in 0..<Int(frames) { p[i] = silent ? 0 : Harness.signal(t0 + i, channel: c) }
             }
             return noErr
         }
@@ -44,7 +48,7 @@ final class Harness: @unchecked Sendable {
 
     deinit {
         unit.deallocateRenderResources()
-        outL.deallocate(); outR.deallocate()
+        outL.deallocate(); outR.deallocate(); mute.deallocate()
         free(list.unsafeMutablePointer)
     }
 
@@ -279,7 +283,7 @@ final class AutomationTests: XCTestCase {
             face.meters.stereo.update(h.shared, now: Date())
             let total = h.shared.ringTotal.acquire()
             var peak: Float = 0
-            for k in 0..<256 { peak = max(peak, abs(h.shared.scopePost[(total - 1 - k) & SharedState.ringMask])) }
+            for k in 0..<256 { peak = max(peak, abs(h.shared.scopeOut[(total - 1 - k) & SharedState.ringMask])) }
             if !peak.isFinite { bad.value = 1 }
             if i % 10 == 0 { face.params.syncFromShared() }
             if i % 211 == 0 { h.shared.loudnessReset.value = 1 }

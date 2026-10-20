@@ -14,6 +14,7 @@ final class MeterReader {
     private var last = Date.distantPast
     let scroller = WaveScroller()
     let stereo = StereoMeterState()
+    let scope = ScopeReader()
 
     init(shared: SharedState) { self.shared = shared }
 

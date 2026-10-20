@@ -66,8 +66,14 @@ final class SharedState: @unchecked Sendable {
     // value per sample into each; the UI copies the newest stretch at display rate.
     static let ringSize = 16384                       // power of two (~340 ms at 48 kHz)
     static let ringMask = ringSize - 1
-    let scopePre: AtomicFloats         // into the clipper (after Input, Drive, Red), L+R / 2
-    let scopePost: AtomicFloats        // clipped output, time-aligned with scopePre
+    // The screen (ScopeReader reads these). All four are lined up in time with scopeOut: the
+    // oversampling filters delay the output a few samples, so the earlier signals are written
+    // that many slots ahead (ClipDSP.process).
+    let scopeIn: AtomicFloats          // the original input, before any control, (L+R) / 2
+    let scopeOut: AtomicFloats         // the final output (after Mix, Output, Bypass), (L+R) / 2
+    let clipIn: AtomicFloats           // into the clipper, from the channel hitting it harder
+    let clipOut: AtomicFloats          // out of the clipper (same channel, before Fire)
+    let scopeClearedAt: AtomicInt      // ringTotal when playback stopped: older samples draw as silence
     let meterInL: AtomicFloats         // after the Input knob
     let meterInR: AtomicFloats
     let meterOutL: AtomicFloats        // final output
@@ -87,7 +93,9 @@ final class SharedState: @unchecked Sendable {
         waveRate = AtomicFloat(100)
         power = AtomicInt(1)
         loudnessReset = AtomicInt(0)
-        scopePre = AtomicFloats(count: SharedState.ringSize); scopePost = AtomicFloats(count: SharedState.ringSize)
+        scopeIn = AtomicFloats(count: SharedState.ringSize); scopeOut = AtomicFloats(count: SharedState.ringSize)
+        clipIn = AtomicFloats(count: SharedState.ringSize); clipOut = AtomicFloats(count: SharedState.ringSize)
+        scopeClearedAt = AtomicInt(0)
         meterInL = AtomicFloats(count: SharedState.ringSize); meterInR = AtomicFloats(count: SharedState.ringSize)
         meterOutL = AtomicFloats(count: SharedState.ringSize); meterOutR = AtomicFloats(count: SharedState.ringSize)
         ringTotal = AtomicInt(0)
@@ -98,7 +106,8 @@ final class SharedState: @unchecked Sendable {
         params.deallocate(); meters.deallocate()
         waveIn.deallocate(); waveOut.deallocate()
         waveWrite.deallocate(); waveTotal.deallocate(); waveRate.deallocate(); power.deallocate(); loudnessReset.deallocate()
-        for p in [scopePre, scopePost, meterInL, meterInR, meterOutL, meterOutR] { p.deallocate() }
+        for p in [scopeIn, scopeOut, clipIn, clipOut, meterInL, meterInR, meterOutL, meterOutR] { p.deallocate() }
+        scopeClearedAt.deallocate()
         ringTotal.deallocate(); sampleRate.deallocate()
     }
 
@@ -385,6 +394,7 @@ final class ClipDSP: @unchecked Sendable {
     private var colIn: Float = 0, colOut: Float = 0
     private var colPre: Float = 0     // peak into the clipper, gathered in shape()
     private var lastPre: Float = 0    // the sample shape() just fed to the clipper
+    private var lastPost: Float = 0   // and what the clipper made of it
 
     init(sampleRate: Double, shared: SharedState) {
         self.sampleRate = sampleRate
@@ -518,12 +528,14 @@ final class ClipDSP: @unchecked Sendable {
 
             var kIn: Float = 0, kOut: Float = 0
             var colOutMax: Float = 0
-            var preSum: Float = 0, postSum: Float = 0
+            var raws: (Float, Float) = (0, 0)
+            var bigPre: Float = 0, bigPost: Float = 0       // clip stage, the channel hit harder
             var xs: (Float, Float) = (0, 0), outs: (Float, Float) = (0, 0)
 
             for chIdx in 0..<2 {
                 let s = ch[chIdx]
                 let raw = chIdx == 0 ? inL[n] : inR[n]
+                if chIdx == 0 { raws.0 = raw } else { raws.1 = raw }
                 let x = raw * sIn                 // input trim (what the input meter shows)
                 let ax = abs(x)
                 if chIdx == 0 { inPeak.0 = max(inPeak.0, ax) } else { inPeak.1 = max(inPeak.1, ax) }
@@ -533,7 +545,7 @@ final class ClipDSP: @unchecked Sendable {
                 var wet: Float = 0, ref: Float = 0
                 if factor == 1 {
                     wet = shape(xd, s, c, knee, goldClassic, aCoef)
-                    preSum += lastPre
+                    if abs(lastPre) >= abs(bigPre) { bigPre = lastPre; bigPost = lastPost }
                     ref = x
                 } else {
                     for j in 0..<factor {
@@ -541,7 +553,7 @@ final class ClipDSP: @unchecked Sendable {
                         var r: Float = j == 0 ? x * fFactor : 0
                         for i in 0..<maxStages { u = s.upW[i].process(u); r = s.upR[i].process(r) }
                         var w = shape(u, s, c, knee, goldClassic, aCoef)
-                        if j == 0 { preSum += lastPre }
+                        if j == 0 && abs(lastPre) >= abs(bigPre) { bigPre = lastPre; bigPost = lastPost }
                         for i in 0..<maxStages { w = s.dnW[i].process(w); r = s.dnR[i].process(r) }
                         if j == 0 { wet = w; ref = r }
                     }
@@ -552,7 +564,6 @@ final class ClipDSP: @unchecked Sendable {
 
                 // anti-overshoot: filter ringing after downsampling can't poke past the ceiling
                 wet = min(max(wet, -c), c)
-                postSum += wet
 
                 var out: Float
                 if delta {
@@ -571,14 +582,19 @@ final class ClipDSP: @unchecked Sendable {
                 let ko = s.kOut2.process(s.kOut1.process(out)); kOut += ko * ko
             }
 
-            // screen + meter rings. With oversampling the clipped output comes out of the
-            // down-sampling filter about 2 samples late, so the pre-clip trace is stored 2 slots
-            // ahead to keep the two traces lined up.
+            // screen + meter rings. The output comes out of the oversampling filters late (the
+            // up-sampling filter and the down-sampling filter each delay it about 2 samples at
+            // 2x, 2.3 at 4x), so the original input is stored that many slots ahead, and the
+            // clip stage (between the two filters) half as many, to line everything up with the
+            // output. Fully bypassed, the output is the input itself, so no offset.
             let total = ringPos
             let slot = total & SharedState.ringMask
-            let preSlot = (total + (factor == 1 ? 0 : 2)) & SharedState.ringMask
-            shared.scopePre[preSlot] = preSum * 0.5
-            shared.scopePost[slot] = postSum * 0.5
+            let inAhead = factor == 1 || sBypass > 0.5 ? 0 : (factor == 2 ? 4 : 5)
+            let clipAhead = factor == 1 ? 0 : 2
+            shared.scopeIn[(total + inAhead) & SharedState.ringMask] = (raws.0 + raws.1) * 0.5
+            shared.clipIn[(total + clipAhead) & SharedState.ringMask] = bigPre
+            shared.clipOut[(total + clipAhead) & SharedState.ringMask] = bigPost
+            shared.scopeOut[slot] = (outs.0 + outs.1) * 0.5
             shared.meterInL[slot] = xs.0; shared.meterInR[slot] = xs.1
             shared.meterOutL[slot] = outs.0; shared.meterOutR[slot] = outs.1
             ringPos = total &+ 1
@@ -636,6 +652,7 @@ final class ClipDSP: @unchecked Sendable {
         lastPre = y
         if a > c { clipOver = max(clipOver, a / c) }     // CLIP readout: how far past the ceiling
         y = Curves.clip(y, ceiling: c, knee: knee)
+        lastPost = y
 
         // Alchemy: amplitude-dependent tilt around 4 kHz. Near the ceiling the highs dip up to
         // about 1 dB and the lows lift slightly, softening the edge clipping leaves behind.

@@ -164,7 +164,7 @@ struct FaceplateView: View {
                 .helpTarget(.inputMeter, face).place(L.meterIn.frame)
             PlateMeters(shared: face.shared, state: face.meters.stereo, isInput: false, geometry: L.meterOut)
                 .helpTarget(.outputMeter, face).place(L.meterOut.frame)
-            PlateScreen(shared: face.shared, ceilingDB: params[.ceilingDB])
+            PlateScreen(shared: face.shared, scope: face.meters.scope, ceilingDB: params[.ceilingDB], isPlugin: face.isPlugin)
                 .helpTarget(.screen, face).place(L.screen)
             PlateClipNumber(reader: face.meters, center: CGPoint(x: L.clipNumber.x - L.clip.minX, y: L.clipNumber.y - L.clip.minY),
                             fontSize: L.clipFont)
@@ -537,33 +537,50 @@ struct PlateMeters: View {
     }
 }
 
-// MARK: - Screen (from the RED CLIP animation pack: time-aligned input vs clipped output)
+// MARK: - Screen (from the RED CLIP animation pack: live input vs final output)
 
-/// Oscilloscope over the picture's screen: the last 120 ms of the signal going into the clipper
-/// (grey) and the clipped output (red, filled), on a linear bipolar amplitude axis with the
-/// +/- ceiling dashed. Fed from the audio thread's sample rings; nothing here touches the audio.
+/// The live scope on the picture's glass, read straight from the audio the engine (or the
+/// host) is processing; nothing here is simulated from knob positions.
+///   - grey: the original input; red: the final output (after Mix, Output and Bypass), both
+///     over the same ~120 ms, lined up in time and on one fixed linear scale (+/-1.5);
+///   - each display column shows the min..max of its samples, so transients survive;
+///   - where the clipper took peaks off, the removed part is shaded and the +/- ceiling guide
+///     lights up over it. The guides follow the Ceiling control and mark the clip stage: Mix
+///     and Output can move the final output past them;
+///   - 30 updates a second, suspended while the screen is hidden or the app is inactive;
+///     paused audio freezes it, stopping clears it, silence is a flat line.
+/// All reading happens here on the UI thread (ScopeReader); the audio thread only writes rings.
 struct PlateScreen: View {
     let shared: SharedState
+    let scope: ScopeReader
     let ceilingDB: Float
+    var isPlugin = false
+    @Environment(\.scenePhase) private var phase
+    @State private var visible = false
 
     // Drawn in the scope's own space: 258 high, and as wide as the glass's shape needs
     // (910 on the iPad face, about 420 on the iPhone face), then scaled onto the glass.
     static let H: CGFloat = 258, left: CGFloat = 57, cy: CGFloat = 133, scale: CGFloat = 56
+    static let fps = 30.0
+
+    /// In the app, inactive or background pauses it; a plug-in window follows its own visibility.
+    private var live: Bool { visible && (isPlugin || phase == .active) }
 
     var body: some View {
-        TimelineView(.animation) { _ in
+        TimelineView(.animation(minimumInterval: 1 / Self.fps, paused: !live)) { timeline in
             Canvas { g, size in
                 let s = size.height / Self.H
                 g.scaleBy(x: s, y: s)
-                draw(g, W: size.width / s)
+                draw(g, W: size.width / s, frame: timeline.date)
             }
         }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
         .allowsHitTesting(true)
     }
 
-    private func draw(_ c: GraphicsContext, W: CGFloat) {
+    private func draw(_ c: GraphicsContext, W: CGFloat, frame: Date) {
         let L = Self.left, R = W - 19, cy = Self.cy, k = Self.scale
-        let n = max(300, min(1300, Int((R - L) * 1.56)))
         c.fill(Path(CGRect(x: 0, y: 0, width: W, height: 258)), with: .color(Color(hex: 0x0b0c0e)))
         c.fill(Path(CGRect(x: 0, y: 0, width: W, height: 258)),
                with: .radialGradient(Gradient(colors: [Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0.07),
@@ -585,7 +602,7 @@ struct PlateScreen: View {
             var p = Path(); p.move(to: CGPoint(x: x, y: 42)); p.addLine(to: CGPoint(x: x, y: 244))
             c.stroke(p, with: .color(Color(hex: 0x18191b)), lineWidth: 1)
         }
-        // +/- ceiling
+        // +/- ceiling guides (clip-stage reference, from the Ceiling control)
         let ceil = CGFloat(dbToGain(ceilingDB))
         for sgn: CGFloat in [-1, 1] {
             var p = Path(); p.move(to: CGPoint(x: L, y: cy - sgn * ceil * k)); p.addLine(to: CGPoint(x: R, y: cy - sgn * ceil * k))
@@ -596,31 +613,71 @@ struct PlateScreen: View {
         c.draw(Text(String(format: "CEILING  %.1f dB", ceilingDB)).font(.system(size: 13)).foregroundColor(Color(hex: 0xff4145)),
                at: CGPoint(x: W - 12, y: 15), anchor: .trailing)
 
-        // the newest 120 ms from the rings
-        let total = shared.ringTotal.acquire()
-        let span = max(2, min(SharedState.ringSize - 8, Int(Double(shared.sampleRate.value) * 0.12)))
-        if total > 4 {
-            let newest = total - 1
-            func sample(_ ring: AtomicFloats, _ i: Int) -> CGFloat {
-                let back = span - 1 - (i * (span - 1)) / (n - 1)
-                let v = CGFloat(ring[(newest - back) & SharedState.ringMask])
-                return max(min(v, 2.2), -2.2)        // keep the trace on the glass
+        // the newest ~120 ms, one column per unit of width
+        _ = frame
+        scope.update(shared, columns: Int(R - L))
+        let n = scope.columns
+        let colW = (R - L) / CGFloat(n)
+        @inline(__always) func y(_ v: Float) -> CGFloat { cy - CGFloat(max(min(v, 2.2), -2.2)) * k }
+        @inline(__always) func x(_ i: Int) -> CGFloat { L + (CGFloat(i) + 0.5) * colW }
+
+        /// A min..max band across the columns, at least `thick` tall so a quiet trace still shows.
+        func band(_ lo: [Float], _ hi: [Float], thick: CGFloat) -> Path {
+            var p = Path()
+            for i in 0..<n {
+                let top = min(y(hi[i]), (y(hi[i]) + y(lo[i])) / 2 - thick / 2)
+                if i == 0 { p.move(to: CGPoint(x: L, y: top)) }
+                p.addLine(to: CGPoint(x: x(i), y: top))
             }
-            func path(_ ring: AtomicFloats) -> Path {
-                var p = Path()
-                for i in 0..<n {
-                    let pt = CGPoint(x: L + (R - L) * CGFloat(i) / CGFloat(n - 1), y: cy - sample(ring, i) * k)
-                    if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-                }
-                return p
+            for i in stride(from: n - 1, through: 0, by: -1) {
+                let bottom = max(y(lo[i]), (y(hi[i]) + y(lo[i])) / 2 + thick / 2)
+                p.addLine(to: CGPoint(x: x(i), y: bottom))
+                if i == 0 { p.addLine(to: CGPoint(x: L, y: bottom)) }
             }
-            let out = path(shared.scopePost)
-            var fill = out
-            fill.addLine(to: CGPoint(x: R, y: cy)); fill.addLine(to: CGPoint(x: L, y: cy)); fill.closeSubpath()
-            c.fill(fill, with: .color(Color(hex: 0x390f13)))
-            c.stroke(path(shared.scopePre), with: .color(Color(hex: 0x89929f)), lineWidth: 2)
-            c.stroke(out, with: .color(Color(hex: 0xff3d42)), lineWidth: 3)
+            p.closeSubpath()
+            return p
         }
+
+        // body of the output (dark red, between the trace and the centre line)
+        var shade = Path()
+        for i in 0..<n {
+            let pt = CGPoint(x: x(i), y: y(max(scope.outMax[i], 0)))
+            if i == 0 { shade.move(to: CGPoint(x: L, y: cy)) }
+            shade.addLine(to: pt)
+        }
+        for i in stride(from: n - 1, through: 0, by: -1) { shade.addLine(to: CGPoint(x: x(i), y: y(min(scope.outMin[i], 0)))) }
+        shade.closeSubpath()
+        c.fill(shade, with: .color(Color(hex: 0x390f13)))
+
+        // original input (grey)
+        c.fill(band(scope.inMin, scope.inMax, thick: 2), with: .color(Color(hex: 0x89929f)))
+
+        // what the clipper took off: shaded from its output up to its input, and the guide lit
+        var cut = Path(), lit = Path()
+        let gTop = cy - ceil * k, gBottom = cy + ceil * k
+        for i in 0..<n {
+            let r = scope.removed(i)
+            let x0 = L + CGFloat(i) * colW
+            if r.top > 0.002 {
+                cut.addRect(CGRect(x: x0, y: y(scope.clipInMax[i]), width: colW + 0.5,
+                                   height: max(0, y(scope.clipOutMax[i]) - y(scope.clipInMax[i]))))
+                lit.addRect(CGRect(x: x0, y: gTop - 1.25, width: colW + 0.5, height: 2.5))
+            }
+            if r.bottom > 0.002 {
+                cut.addRect(CGRect(x: x0, y: y(scope.clipOutMin[i]), width: colW + 0.5,
+                                   height: max(0, y(scope.clipInMin[i]) - y(scope.clipOutMin[i]))))
+                lit.addRect(CGRect(x: x0, y: gBottom - 1.25, width: colW + 0.5, height: 2.5))
+            }
+        }
+        c.fill(cut, with: .color(Color(hex: 0xff4145).opacity(0.3)))
+
+        // final output (red)
+        c.fill(band(scope.outMin, scope.outMax, thick: 3), with: .color(Color(hex: 0xff3d42)))
+
+        var glow = c
+        glow.addFilter(.shadow(color: Color(hex: 0xff4145), radius: 4))
+        glow.fill(lit, with: .color(Color(hex: 0xff6a6e)))
+
         c.draw(Text("AMPLITUDE").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: 12, y: 242), anchor: .leading)
         c.draw(Text("120 ms").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: W - 19, y: 242), anchor: .trailing)
     }

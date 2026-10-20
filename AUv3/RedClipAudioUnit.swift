@@ -154,6 +154,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(kAudioUnitErr_FailedInitialization))
         }
         render.prepare(format: inBus.format, frames: maximumFramesToRender, shared: shared)
+        shared.scopeClearedAt.value = shared.ringTotal.acquire()     // a fresh start shows a flat line
     }
 
     public override func deallocateRenderResources() {

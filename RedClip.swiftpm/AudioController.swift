@@ -93,6 +93,7 @@ final class AudioController: ObservableObject {
         } else {
             stop()
             engine.stop()
+            clearScope()
         }
     }
 
@@ -114,6 +115,10 @@ final class AudioController: ObservableObject {
         seekRequest.value = target
         playhead.value = target                      // so the bar follows the finger straight away
     }
+
+    /// Stopped (power off, new audio): the screen starts again from a flat line. Paused
+    /// playback just freezes it, since no new samples arrive.
+    private func clearScope() { shared.scopeClearedAt.value = shared.ringTotal.acquire() }
 
     // MARK: Loading
 
@@ -173,6 +178,7 @@ final class AudioController: ObservableObject {
         let dsp = ClipDSP(sampleRate: b.sampleRate, shared: shared)
         let ph = playhead, flag = playFlag, seek = seekRequest, sL = scratchL, sR = scratchR, chunk = AudioController.chunk
         ph.value = 0          // the engine is stopped here, so nothing renders while these reset
+        clearScope()
         seek.value = -1
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
