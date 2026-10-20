@@ -1,0 +1,8 @@
+New: Red Clip now runs on iPhone as well as iPad, with matching red and Platinum portrait faceplates. Both devices have the same controls, presets, help bubbles, meters and scope.
+
+Please try:
+- Loading a file (Load or Samples), playing it and exporting it on iPhone.
+- Turning knobs and checking the values and the sound follow them.
+- The ? help key, A/B, Undo, Link, Unity, Delta, Bypass and power.
+- Switching to the Platinum faceplate in the top menu's Settings.
+- The AUv3 in Logic Pro on iPad, or in AUM or GarageBand on iPhone.
