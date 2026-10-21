@@ -440,43 +440,52 @@ struct PlateBypass: View {
 
 // MARK: - Meters (from the RED CLIP animation pack: RMS-style LEDs with a separate peak hold)
 
-/// Level detectors for the four LED strips: ~20 ms RMS window, 40 ms rise / 250 ms fall smoothing,
-/// peak markers that hold for 600 ms and then fall at 20 dB/s. Fed from the audio thread's
-/// sample rings (input after the Input knob, final output). These are digital RMS-style level
-/// meters, not calibrated analog VU meters.
+/// Level detectors for the four LED strips: 40 ms rise / 250 ms fall smoothing of the RMS of
+/// every sample since the last frame, peak markers that hold for 600 ms and then fall at 20 dB/s.
+/// Fed from the audio thread's sample rings (input after the Input knob, before Drive and the
+/// clipper; final output after Mix, Output and Bypass, never capped at the ceiling). Every sample
+/// the engine wrote counts, however the audio blocks and display frames line up; the last level
+/// is kept between blocks and decays to silence once no audio has arrived for 150 ms.
+/// These are digital RMS-style level meters, not calibrated analog VU meters.
 final class StereoMeterState {
+    static let staleAfter: TimeInterval = 0.15
     private(set) var levels = [Double](repeating: 0, count: 4)     // inL, inR, outL, outR (linear RMS)
-    private(set) var hold = [Double](repeating: -60, count: 4)     // dBFS
+    private(set) var hold = [Double](repeating: -120, count: 4)    // dBFS; at or below -60 nothing is drawn
     private var timers = [Double](repeating: 0, count: 4)
+    private var targetRms = [Double](repeating: 0, count: 4)
     private var last: Date?
+    private var lastSnapshot = Date.distantPast
     private var lastTotal = -1
 
     func update(_ shared: SharedState, now: Date) {
-        let dt = min(max(now.timeIntervalSince(last ?? now), 0), 0.1)
         if let last, now.timeIntervalSince(last) < 0.008 { return }      // once per frame
+        let dt = min(max(now.timeIntervalSince(last ?? now), 0), 0.1)
         last = now
         let total = shared.ringTotal.acquire()
-        let moving = total != lastTotal
+        // Samples written since the last frame. A long stall can't read more than half the ring,
+        // so the audio thread is never overwriting the stretch being read.
+        let fresh = lastTotal < 0 ? 0 : min(max(total &- lastTotal, 0), SharedState.ringSize / 2)
         lastTotal = total
-        let window = max(1, Int(Double(shared.sampleRate.value) * 0.02))
+        if fresh > 0 { lastSnapshot = now }
+        let stale = now.timeIntervalSince(lastSnapshot) > Self.staleAfter
         for n in 0..<4 {
             let ring = n == 0 ? shared.meterInL : n == 1 ? shared.meterInR : n == 2 ? shared.meterOutL : shared.meterOutR
             var sum: Double = 0, peak: Double = 0
-            if moving {
-                for k in 0..<window {
-                    let v = Double(ring[(total - 1 - k) & SharedState.ringMask])
-                    sum += v * v
-                    peak = max(peak, abs(v))
-                }
+            for k in 0..<fresh {
+                let v = Double(ring[(total - 1 - k) & SharedState.ringMask])
+                sum += v * v
+                peak = max(peak, abs(v))
             }
-            let rms = (sum / Double(window)).squareRoot()
+            if fresh > 0 { targetRms[n] = (sum / Double(fresh)).squareRoot() }
+            let rms = stale ? 0 : targetRms[n]
+            if stale { peak = 0 }
             let coeff = exp(-dt / (rms > levels[n] ? 0.04 : 0.25))
             levels[n] = coeff * levels[n] + (1 - coeff) * rms
             let pdb = 20 * log10(max(peak, 1e-6))
-            timers[n] = max(0, timers[n] - dt)
-            if timers[n] == 0 { hold[n] -= 20 * dt }
+            let holdLeft = timers[n]
+            timers[n] = max(0, holdLeft - dt)
+            hold[n] = max(-120, hold[n] - 20 * max(0, dt - holdLeft))   // falls only once the hold runs out
             if pdb >= hold[n] { hold[n] = pdb; timers[n] = 0.6 }
-            hold[n] = max(hold[n], -80)
         }
     }
 }
@@ -528,7 +537,8 @@ struct PlateMeters: View {
                         g.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 1)),
                                with: .color(active ? Color(hex: 0xff393f) : Color(hex: 0x3a0f12)))
                     }
-                    let py = yAt(db: CGFloat(min(max(state.hold[n], -60), 0)))
+                    if state.hold[n] <= -60 { continue }
+                    let py = yAt(db: CGFloat(min(state.hold[n], 0)))
                     g.fill(Path(CGRect(x: x0 - ox, y: py - oy, width: x1 - x0 + 1, height: 2)),
                            with: .color(Color(hex: 0xff8587)))
                 }
