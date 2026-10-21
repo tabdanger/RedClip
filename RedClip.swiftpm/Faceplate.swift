@@ -514,14 +514,19 @@ struct PlateMeters: View {
     var body: some View {
         TimelineView(.animation) { ctx in
             let _ = state.update(shared, now: ctx.date)
+            // SwiftUI only redraws a Canvas whose captured values changed, so it takes this frame's
+            // readings and time as values; reading the (unchanged) state object inside it would
+            // leave the strips frozen on their first, empty frame.
+            let levels = state.levels, hold = state.hold, frame = ctx.date
             Canvas { g, _ in
+                _ = frame
                 let ox = geometry.frame.minX
                 let oy = geometry.frame.minY
                 let first = isInput ? 0 : 2
                 for side in 0..<2 {
                     let n = first + side
                     let (x0, x1) = geometry.strips[side]
-                    let db = 20 * log10(max(state.levels[n], 1e-6))
+                    let db = 20 * log10(max(levels[n], 1e-6))
                     g.fill(Path(CGRect(x: x0 - 1 - ox, y: geometry.backTop - oy, width: x1 - x0 + 3, height: geometry.backHeight)),
                            with: .color(Color(red: 0.039, green: 0.027, blue: 0.031)))
                     for (y0, y1) in geometry.slots {
@@ -537,8 +542,8 @@ struct PlateMeters: View {
                         g.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 1)),
                                with: .color(active ? Color(hex: 0xff393f) : Color(hex: 0x3a0f12)))
                     }
-                    if state.hold[n] <= -60 { continue }
-                    let py = yAt(db: CGFloat(min(state.hold[n], 0)))
+                    if hold[n] <= -60 { continue }
+                    let py = yAt(db: CGFloat(min(hold[n], 0)))
                     g.fill(Path(CGRect(x: x0 - ox, y: py - oy, width: x1 - x0 + 1, height: 2)),
                            with: .color(Color(hex: 0xff8587)))
                 }
