@@ -23,6 +23,12 @@ from anywhere else get copied in there as well.
 ## Secrets (Settings › Secrets and variables › Actions)
 Same four as MS26: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`, `APPLE_TEAM_ID`.
 
+## Without GitHub Actions: Codemagic
+`codemagic.yaml` does the same upload on Codemagic's Macs (free personal plan, about 500 Mac
+minutes a month). Add the repo in Codemagic, add the App Store Connect API key under settings ›
+Integrations › Developer Portal named **Red Clip**, then Start new build › **Upload Red Clip to
+TestFlight**. The build number is one more than the latest build in App Store Connect.
+
 ## First upload
 1. Actions › Upload Red Clip › Run workflow › **sign** — registers the bundle IDs
    `com.tabdanger.redclip` and `com.tabdanger.redclip.AUv3` and test-signs a build.

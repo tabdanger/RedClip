@@ -126,6 +126,11 @@ def check():
     status, js = call("GET", f"/v1/bundleIds?filter[identifier]={BUNDLE_ID}&limit=50")
     if status == 200:
         found = any(d["attributes"].get("identifier") == BUNDLE_ID for d in js.get("data", []))
+        # Codemagic runs without an APPLE_TEAM_ID secret: the bundle ID's prefix is the Team ID.
+        seed = next((d["attributes"].get("seedId") for d in js.get("data", []) if d["attributes"].get("seedId")), None)
+        if seed and not os.environ.get("APPLE_TEAM_ID") and github_env:
+            with open(github_env, "a") as f:
+                f.write(f"APPLE_TEAM_ID={seed}\n")
         say("notice", "Bundle ID", f"{BUNDLE_ID} is {'registered' if found else 'not registered yet (the upload will register it)'}.")
     else:
         say("warning", "Bundle ID", f"Can't read identifiers (HTTP {status} {problem(js)}). Signing needs an Admin API key.")
@@ -165,6 +170,17 @@ def builds():
                     f"uploaded {str(a.get('uploadedDate', '')).replace('T', ' ')}"
                     + (", expired" if a.get("expired") else ""))
     say("notice", "Builds", " | ".join(rows) if rows else "No builds yet (a fresh upload can take a few minutes to appear).")
+
+
+def next_build():
+    """Prints one more than the highest build number App Store Connect has for the app."""
+    app_id = os.environ.get("ASC_APP_ID")
+    status, js = call("GET", f"/v1/builds?filter[app]={app_id}&sort=-uploadedDate&limit=200")
+    if status != 200:
+        say("error", "Build number", f"Couldn't read builds: HTTP {status} {problem(js)}")
+        sys.exit(1)
+    numbers = [int(b["attributes"]["version"]) for b in js.get("data", []) if str(b["attributes"].get("version", "")).isdigit()]
+    print(max(numbers, default=0) + 1)
 
 
 def testflight():
@@ -558,6 +574,8 @@ if __name__ == "__main__":
         check()
     elif command == "builds":
         builds()
+    elif command == "nextbuild":
+        next_build()
     elif command == "external":
         external(sys.argv[2] if len(sys.argv) > 2 else "")
     elif command == "wait":
