@@ -1,0 +1,226 @@
+# Builds Red Clip (app + AUv3 effect) on one of Codemagic's Macs, signs it, uploads it to App Store
+# Connect and gives it to the TestFlight testers: the same steps as .github/workflows/upload.yml,
+# for when GitHub Actions can't run. Runs only when started: Codemagic › Red Clip › Start new build.
+#
+# Setup in Codemagic (once):
+#   Personal account (or team) settings › Integrations › Developer Portal › Manage keys › Add key:
+#   name it exactly  Red Clip  and upload the AuthKey_XXXXXXXXXX.p8 of an App Store Connect API key
+#   with the Admin role, with its Issuer ID and Key ID. Nothing else is needed: the Team ID is read
+#   from the bundle ID, and the build number is one more than the latest build in App Store Connect.
+#   To force a build number, add an environment variable REDCLIP_BUILD (digits) in the app settings.
+workflows:
+  testflight:
+    name: Upload Red Clip to TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: Red Clip
+    environment:
+      xcode: latest
+      vars:
+        BUNDLE_ID: com.tabdanger.redclip
+    scripts:
+      - name: Use the GitHub upload scripts here
+        script: |
+          # .github/scripts read GITHUB_ENV / GITHUB_WORKSPACE; Codemagic's CM_ENV does the same job.
+          mkdir -p "$HOME/redclip-tmp"
+          {
+            echo "GITHUB_ENV=$CM_ENV"
+            echo "GITHUB_WORKSPACE=$CM_BUILD_DIR"
+            echo "GITHUB_RUN_ID=cm-$CM_BUILD_ID"
+            echo "RUNNER_TEMP=$HOME/redclip-tmp"
+            echo "SIGNING=$HOME/redclip-tmp/signing"
+          } >> "$CM_ENV"
+          echo "::notice title=Xcode::$(xcodebuild -version | tr '\n' ' ')"
+          case "$(xcodebuild -version | head -1)" in
+            "Xcode 2"[6-9]*) ;;
+            *) echo "::error title=Xcode::Apple only accepts apps built with Xcode 26 or later."; exit 1 ;;
+          esac
+
+      - name: Check the API key
+        script: |
+          ASC_KEY_ID=$(printf '%s' "${ASC_KEY_ID:-$APP_STORE_CONNECT_KEY_IDENTIFIER}" | tr -d '[:space:]')
+          ASC_ISSUER_ID=$(printf '%s' "${ASC_ISSUER_ID:-$APP_STORE_CONNECT_ISSUER_ID}" | tr -d '[:space:]')
+          KEY="${ASC_KEY_P8:-$APP_STORE_CONNECT_PRIVATE_KEY}"
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$KEY" ]; then
+            echo "::error title=API key::Add the App Store Connect key in Codemagic: settings › Integrations › Developer Portal, named Red Clip."
+            exit 1
+          fi
+          mkdir -p "$SIGNING" ~/.appstoreconnect/private_keys
+          printf '%s\n' "$KEY" | tr -d '\r' > "$SIGNING/AuthKey.p8"
+          cp "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2>/dev/null; then
+            echo "::error title=API key::The uploaded .p8 isn't a readable private key. Upload the file again, exactly as downloaded."
+            exit 1
+          fi
+          {
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+            echo "ASC_KEY_PATH=$SIGNING/AuthKey.p8"
+          } >> "$CM_ENV"
+
+      - name: Check App Store Connect (API key, app record, signing access)
+        script: python3 .github/scripts/asc.py check
+
+      - name: Set the build number
+        working_directory: RedClip.swiftpm
+        script: |
+          BASE=$(sed -n 's/.*bundleVersion: "\([0-9][0-9]*\)".*/\1/p' Package.swift)
+          VERSION=$(sed -n 's/.*displayVersion: "\([^"]*\)".*/\1/p' Package.swift)
+          case "$REDCLIP_BUILD" in
+            ''|*[!0-9]*) BUILD=$(python3 "$CM_BUILD_DIR/.github/scripts/asc.py" nextbuild) ;;
+            *) BUILD="$REDCLIP_BUILD" ;;
+          esac
+          sed -i '' "s/bundleVersion: \"$BASE\"/bundleVersion: \"$BUILD\"/" Package.swift
+          grep -n 'bundleVersion\|displayVersion' Package.swift
+          echo "BUILD=$BUILD" >> "$CM_ENV"
+          echo "VERSION=$VERSION" >> "$CM_ENV"
+          echo "::notice title=Version::Red Clip $VERSION (build $BUILD)"
+
+      - name: Make the Xcode project (app + AUv3 plug-in) with XcodeGen
+        script: |
+          command -v xcodegen > /dev/null || brew install xcodegen > "$RUNNER_TEMP/brew.log" 2>&1 || { tail -20 "$RUNNER_TEMP/brew.log"; exit 1; }
+          REDCLIP_BUILD="$BUILD" python3 xcode/generate.py
+          xcodegen generate --spec xcode/project.yml
+
+      - name: Build Red Clip + AUv3 for the App Store (archive, signed in the next steps)
+        script: |
+          xcodebuild \
+            -project xcode/RedClip.xcodeproj \
+            -scheme RedClip \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/RedClip.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            archive > "$RUNNER_TEMP/archive.log" 2>&1 || true
+          python3 .github/scripts/annotate.py "$RUNNER_TEMP/archive.log" "Archive"
+          if ! grep -q "ARCHIVE SUCCEEDED" "$RUNNER_TEMP/archive.log"; then tail -30 "$RUNNER_TEMP/archive.log"; exit 1; fi
+          APP=$(find "$RUNNER_TEMP/RedClip.xcarchive/Products" -maxdepth 3 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "::error title=Archive::No .app inside the archive"; exit 1; fi
+          echo "APP=$APP" >> "$CM_ENV"
+          /usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" -c "Print CFBundleShortVersionString" -c "Print CFBundleVersion" "$APP/Info.plist"
+
+      - name: Sign Red Clip with Apple's cloud signing (Xcode export)
+        script: |
+          if [ -z "$APPLE_TEAM_ID" ]; then echo "::warning title=Team ID::Not found, so cloud signing is skipped."; exit 0; fi
+          cat > "$SIGNING/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/RedClip.xcarchive" \
+            -exportOptionsPlist "$SIGNING/ExportOptions.plist" \
+            -exportPath "$SIGNING/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" > "$RUNNER_TEMP/export.log" 2>&1 || true
+          IPA_FILE=$(find "$SIGNING/export" -maxdepth 1 -name "*.ipa" 2>/dev/null | head -1)
+          if [ -n "$IPA_FILE" ]; then
+            echo "IPA=$IPA_FILE" >> "$CM_ENV"
+            echo "::notice title=Signed::Red Clip $VERSION (build $BUILD) signed by Xcode with Apple's cloud signing ($(du -h "$IPA_FILE" | cut -f1))."
+          else
+            tail -25 "$RUNNER_TEMP/export.log"
+            echo "::warning title=Cloud signing::Didn't work, so an API-made certificate is used instead."
+          fi
+
+      - name: Sign with an API-made certificate if cloud signing didn't work
+        script: |
+          if [ -n "$IPA" ]; then echo "Already signed."; exit 0; fi
+          set -e
+          python3 .github/scripts/asc.py prepare "$SIGNING"
+          cd "$SIGNING"
+          /usr/bin/openssl x509 -inform DER -in signing.cer -out signing.pem
+          P12_PASSWORD=$(uuidgen)
+          /usr/bin/openssl pkcs12 -export -inkey signing.key -in signing.pem -out signing.p12 -passout pass:"$P12_PASSWORD"
+          KC="$SIGNING/upload.keychain-db"
+          KC_PASSWORD=$(uuidgen)
+          echo "KC=$KC" >> "$CM_ENV"
+          security create-keychain -p "$KC_PASSWORD" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASSWORD" "$KC"
+          security import signing.p12 -k "$KC" -P "$P12_PASSWORD" -A -t cert -f pkcs12
+          if curl -sfL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o wwdr.cer; then security import wwdr.cer -k "$KC" || true; fi
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASSWORD" "$KC" > /dev/null
+          IDENTITY=$(/usr/bin/openssl x509 -in signing.pem -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')
+          security find-identity -v -p codesigning "$KC"
+
+          security cms -D -i profile.mobileprovision > profile.plist
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' profile.plist > entitlements.plist
+
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          APPDIR="Payload/$(basename "$APP")"
+          cp profile.mobileprovision "$APPDIR/embedded.mobileprovision"
+          find "$APPDIR" -depth \( -name "*.framework" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' item; do
+            codesign --force --sign "$IDENTITY" --keychain "$KC" --timestamp=none "$item"
+          done
+          APPEX="$APPDIR/PlugIns/RedClipAU.appex"
+          if [ -d "$APPEX" ]; then
+            security cms -D -i plugin.mobileprovision > plugin-profile.plist
+            /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' plugin-profile.plist > plugin-entitlements.plist
+            cp plugin.mobileprovision "$APPEX/embedded.mobileprovision"
+            codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements plugin-entitlements.plist \
+              --generate-entitlement-der --timestamp=none "$APPEX"
+          fi
+          codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements entitlements.plist \
+            --generate-entitlement-der --timestamp=none "$APPDIR"
+          codesign --verify --deep --strict --verbose=2 "$APPDIR"
+          rm -f RedClip.ipa
+          zip -qry RedClip.ipa Payload
+          echo "IPA=$SIGNING/RedClip.ipa" >> "$CM_ENV"
+          echo "::notice title=Signed::Red Clip $VERSION (build $BUILD) signed with an API-made certificate."
+
+      - name: Check the plug-in is inside the signed app
+        script: |
+          if ! unzip -l "$IPA" | grep -q 'PlugIns/RedClipAU.appex/RedClipAU$'; then
+            echo "::error title=AUv3::PlugIns/RedClipAU.appex is missing from the signed app."
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/ipa" && mkdir -p "$RUNNER_TEMP/ipa" && unzip -q "$IPA" -d "$RUNNER_TEMP/ipa"
+          APPEX=$(find "$RUNNER_TEMP/ipa/Payload" -maxdepth 3 -name "RedClipAU.appex" | head -1)
+          if [ ! -f "$APPEX/embedded.mobileprovision" ] || ! codesign --verify --strict "$APPEX"; then
+            echo "::error title=AUv3::The plug-in inside the app isn't signed with its own App Store profile."
+            exit 1
+          fi
+          echo "::notice title=AUv3::The Red Clip plug-in is inside the signed app with its own App Store profile."
+
+      - name: Upload to App Store Connect
+        script: |
+          cd "$SIGNING"
+          xcrun altool --validate-app --type ios --file "$IPA" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" > validate.log 2>&1 || { cat validate.log; exit 1; }
+          cat validate.log
+          STATUS=0
+          xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" > upload.log 2>&1 || STATUS=$?
+          cat upload.log
+          if [ "$STATUS" -ne 0 ] || grep -qiE "^\*\*\* error|upload failed" upload.log; then exit 1; fi
+          echo "::notice title=Uploaded::Red Clip $VERSION (build $BUILD) was uploaded."
+
+      - name: Wait for Apple to process the build, then give it to the internal testers
+        script: python3 .github/scripts/asc.py wait "$BUILD"
+
+      - name: Send the build to the external group (Beta App Review for the public link)
+        script: python3 .github/scripts/asc.py external "$BUILD" || echo "::warning title=External::Not sent to the external group; the upload itself worked."
+        ignore_failure: true
+
+      - name: Clean up
+        script: |
+          if [ -n "$KC" ]; then security delete-keychain "$KC" || true; fi
+          rm -rf "$SIGNING" ~/.appstoreconnect/private_keys
+
+    artifacts:
+      - $HOME/redclip-tmp/archive.log
