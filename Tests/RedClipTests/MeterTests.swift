@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 
 // The LED meters: drives audio through the real plug-in render path in 1024-frame blocks (longer
 // than a 60 fps frame, as many hosts use), steps the meters on a simulated display clock, and
@@ -96,6 +97,34 @@ final class MeterTests: XCTestCase {
         play(h, meters, &clock, seconds: 0.5, audio: false)
         for n in 0..<4 {
             XCTAssertLessThan(db(meters.levels[n]), playing[n] - 20, "strip \(n) should have fallen once the audio stopped")
+        }
+    }
+
+    // MARK: Drawing
+
+    /// Lit LED pixels (bright red) in the input strips as the faceplate draws them.
+    private func litPixels(_ h: Harness, _ meters: StereoMeterState, _ geometry: PlateLayout.Meter) -> Int {
+        let view = PlateMeters(shared: h.shared, state: meters, isInput: true, geometry: geometry)
+            .frame(width: geometry.frame.width, height: geometry.frame.height)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        guard let image = renderer.cgImage else { XCTFail("nothing rendered"); return 0 }
+        let w = image.width, hgt = image.height
+        var px = [UInt8](repeating: 0, count: w * hgt * 4)
+        let ctx = CGContext(data: &px, width: w, height: hgt, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: hgt))
+        var lit = 0
+        for i in stride(from: 0, to: px.count, by: 4) where px[i] > 200 && px[i + 1] < 80 { lit += 1 }
+        return lit
+    }
+
+    func testStripsLightWithAudioOnBothFaces() throws {
+        for geometry in [PlateLayout.pad.meterIn, PlateLayout.phone.meterIn] {
+            let quiet = try Harness()
+            XCTAssertEqual(litPixels(quiet, StereoMeterState(), geometry), 0, "no audio, no lit LEDs")
+            let (h, meters, _) = try settled([:])
+            XCTAssertGreaterThan(litPixels(h, meters, geometry), 100, "a playing tone lights the input strips")
         }
     }
 }
