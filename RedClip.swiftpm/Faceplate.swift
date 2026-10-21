@@ -42,44 +42,7 @@ struct FaceplateView: View {
                 .helpTarget(.presets, face).place(L.presetPrev)
             HitArea { params.stepPreset(1) }
                 .helpTarget(.presets, face).place(L.presetNext)
-            Menu {
-                if !face.isPlugin {
-                    Section("Audio") {
-                        Button { face.importRequested = true } label: {
-                            Label("Import Audio from Files…", systemImage: "square.and.arrow.down")
-                        }
-                        if face.sampleFiles.isEmpty {
-                            Text("Samples folder is empty")
-                        } else {
-                            Menu {
-                                ForEach(face.sampleFiles) { item in
-                                    Button(item.name) { face.loadSample?(item.url) }
-                                }
-                            } label: {
-                                Label("Samples", systemImage: "square.stack.3d.down.right")
-                            }
-                        }
-                        Button { face.loadDemo?() } label: { Label("Demo Loop", systemImage: "music.note") }
-                    }
-                }
-                Section("Presets") {
-                    ForEach(Preset.banks, id: \.self) { bank in
-                        Menu(bank) {
-                            ForEach(Preset.factory.indices.filter { Preset.factory[$0].bank == bank }, id: \.self) { i in
-                                Button(Preset.factory[i].name) { params.apply(i) }
-                            }
-                        }
-                    }
-                }
-                Section("Settings") {
-                    Picker(selection: $face.faceplate) {
-                        ForEach(Faceplate.allCases, id: \.self) { f in Text(f.title).tag(f) }
-                    } label: {
-                        Label("Faceplate", systemImage: "paintbrush")
-                    }
-                    .pickerStyle(.menu)
-                }
-            } label: {
+            Button { face.toggleRCMenu() } label: {
                 Text(params.presetName)
                     .font(.system(size: L.presetFont, weight: .regular))
                     .foregroundStyle(Plate.text)
@@ -87,6 +50,9 @@ struct FaceplateView: View {
                     .frame(width: L.presetName.width, height: L.presetName.height)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open preset menu, \(params.presetName)")
+            .rcMenuAnchor(.presets)
             .helpTarget(.presets, face)
             .place(L.presetName)
 

@@ -29,6 +29,7 @@ struct AppRootView: View {
             .helpBubbles(face, scale: layout.bubbleScale)
             .scaleEffect(scale)
             .frame(width: geo.size.width, height: geo.size.height)
+            .redClipPresetMenuHost(face: face, refreshSamples: { audio.refreshSamples() })
         }
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -128,21 +129,16 @@ struct AppRootView: View {
 
     /// Everything in On My iPad › Red Clip › Samples.
     private var samplesMenu: some View {
-        Menu {
-            if audio.samples.isEmpty {
-                Text(UIDevice.current.userInterfaceIdiom == .phone
-                     ? "Put audio files in Files › On My iPhone › Red Clip › Samples"
-                     : "Put audio files in Files › On My iPad › Red Clip › Samples")
-            } else {
-                ForEach(audio.samples, id: \.self) { url in
-                    Button(SampleLibrary.relativeName(url)) { audio.load(url: url) }
-                }
-            }
-            Divider()
-            Button { audio.refreshSamples() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+        Button {
+            audio.refreshSamples()
+            face.toggleRCMenu(page: .samples, anchor: .samples)
         } label: {
             Color.clear.contentShape(Rectangle())   // the SAMPLES legend is in the picture
         }
+        .buttonStyle(.plain)
+        .frame(width: T.samples.width, height: T.samples.height)
+        .rcMenuAnchor(.samples)
+        .accessibilityLabel("Open samples menu")
     }
 
     private func stripButton(_ icon: String, _ title: String, action: @escaping () -> Void) -> some View {
