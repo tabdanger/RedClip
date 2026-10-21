@@ -228,7 +228,7 @@ enum Faceplate: String, CaseIterable {
     case face1 = "Face1"
     case face1Platinum = "Face1_platinum"
 
-    var title: String { self == .face1 ? "Face1 (Red)" : "Face1 Platinum" }
+    var title: String { self == .face1 ? "RedClip Standard" : "RedClip Platinum" }
 }
 
 /// What changes between finishes: the pictures and the colour of the printed legends.

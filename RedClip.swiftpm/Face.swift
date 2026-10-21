@@ -19,7 +19,7 @@ final class FaceModel: ObservableObject {
     }
     @Published private(set) var helpTopic: HelpTopic?
 
-    /// Which finish the faceplate shows: Face1 (red) or Face1_platinum. Remembered between launches.
+    /// Which finish the faceplate shows: RedClip_Standard (red, the default) or RedClip_Platinum. Remembered between launches.
     private static let faceKey = "RedClip.Faceplate"
     @Published var faceplate: Faceplate = Faceplate(rawValue: UserDefaults.standard.string(forKey: FaceModel.faceKey) ?? "") ?? .face1 {
         didSet { UserDefaults.standard.set(faceplate.rawValue, forKey: Self.faceKey) }
