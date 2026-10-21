@@ -22,7 +22,7 @@ public final class RedClipAUViewController: AUViewController, AUAudioUnitFactory
     public override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        // half the faceplate picture (iPad face 1448 x 997; iPhone face 852 x 1690 above its transport)
+        // half the faceplate picture (iPad face 1448 x 997; iPhone face 851 x 1641 above its transport)
         let layout = PlateLayout.current
         preferredContentSize = CGSize(width: layout.size.width / 2, height: layout.pluginHeight / 2)
         showFace()
