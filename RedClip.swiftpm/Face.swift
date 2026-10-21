@@ -32,6 +32,8 @@ final class FaceModel: ObservableObject {
     // Audio page of the top menu (standalone app only; in a DAW the host supplies the audio)
     @Published var sampleFiles: [SampleItem] = []
     @Published var importRequested = false
+    /// Transient custom menu state; never saved in an audio preset.
+    @Published var rcMenuRequest: RCMenuRequest?
     var loadSample: ((URL) -> Void)?
     var loadDemo: (() -> Void)?
 

@@ -62,6 +62,7 @@ struct PluginRootView: View {
                 .helpBubbles(face, scale: layout.bubbleScale)
                 .scaleEffect(scale)
                 .frame(width: geo.size.width, height: geo.size.height)
+                .redClipPresetMenuHost(face: face)
         }
         .background(Color.black)
         .onReceive(tick) { _ in face.params.syncFromShared() }
