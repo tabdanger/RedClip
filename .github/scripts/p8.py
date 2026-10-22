@@ -65,4 +65,4 @@ with open(out, "w") as f:
     f.write(f"-----BEGIN {m.group(1)}-----\n{lines}\n-----END {m.group(1)}-----\n")
 print(f"Key text: {len(raw)} characters, {raw.count(chr(10)) + 1} lines, "
       f"escaped line breaks: {'yes' if chr(92) + 'n' in raw else 'no'}, "
-      f"key body: {len(body)} characters (an Apple .p8 has 184).")
+      f"key body: {len(body)} characters (an Apple .p8 has about 200).")
