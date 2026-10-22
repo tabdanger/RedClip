@@ -55,7 +55,10 @@ workflows:
             echo "::error title=API key::The uploaded .p8 isn't a readable private key. In Codemagic, delete the Red Clip key and add it again with the .p8 file exactly as Apple downloaded it."
             exit 1
           fi
-          echo "The API key ${ASC_KEY_ID} reads fine."
+          echo "The API key reads fine. Key ID: ${ASC_KEY_ID} (${#ASC_KEY_ID} characters, should be 10). Issuer ID: ${ASC_ISSUER_ID:0:8}... (${#ASC_ISSUER_ID} characters, should be 36)."
+          [ ${#ASC_KEY_ID} -ne 10 ] && echo "::warning title=Key ID::Is ${#ASC_KEY_ID} characters long; an App Store Connect Key ID is 10."
+          [ ${#ASC_ISSUER_ID} -ne 36 ] && echo "::warning title=Issuer ID::Is ${#ASC_ISSUER_ID} characters long; an Issuer ID is 36 (like 69a6de7e-....)."
+          true
           {
             echo "ASC_KEY_ID=$ASC_KEY_ID"
             echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
