@@ -47,13 +47,15 @@ workflows:
             exit 1
           fi
           mkdir -p "$SIGNING" ~/.appstoreconnect/private_keys
-          printf '%s\n' "$KEY" | tr -d '\r' > "$SIGNING/AuthKey.p8"
+          P8_TEXT="$KEY" python3 .github/scripts/p8.py "$SIGNING/AuthKey.p8" || exit 1
           cp "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2>/dev/null; then
-            echo "::error title=API key::The uploaded .p8 isn't a readable private key. Upload the file again, exactly as downloaded."
+          if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2> "$RUNNER_TEMP/pkey.log"; then
+            echo "openssl: $(head -3 "$RUNNER_TEMP/pkey.log" | tr '\n' ' ')"
+            echo "::error title=API key::The uploaded .p8 isn't a readable private key. In Codemagic, delete the Red Clip key and add it again with the .p8 file exactly as Apple downloaded it."
             exit 1
           fi
+          echo "The API key ${ASC_KEY_ID} reads fine."
           {
             echo "ASC_KEY_ID=$ASC_KEY_ID"
             echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
