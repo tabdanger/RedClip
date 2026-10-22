@@ -47,7 +47,7 @@ workflows:
             exit 1
           fi
           mkdir -p "$SIGNING" ~/.appstoreconnect/private_keys
-          P8_TEXT="$KEY" python3 .github/scripts/p8.py "$SIGNING/AuthKey.p8" || exit 1
+          ASC_KEY_ID="$ASC_KEY_ID" P8_TEXT="$KEY" python3 .github/scripts/p8.py "$SIGNING/AuthKey.p8" || exit 1
           cp "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2> "$RUNNER_TEMP/pkey.log"; then
