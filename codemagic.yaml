@@ -4,7 +4,7 @@
 #
 # Setup in Codemagic (once):
 #   Personal account (or team) settings › Integrations › Developer Portal › Manage keys › Add key:
-#   name it exactly  Red Clip  and upload the AuthKey_XXXXXXXXXX.p8 of an App Store Connect API key
+#   name it exactly  Red Clip 2  and upload the AuthKey_XXXXXXXXXX.p8 of an App Store Connect API key
 #   with the Admin role, with its Issuer ID and Key ID. Nothing else is needed: the Team ID is read
 #   from the bundle ID, and the build number is one more than the latest build in App Store Connect.
 #   To force a build number, add an environment variable REDCLIP_BUILD (digits) in the app settings.
@@ -14,7 +14,7 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: Red Clip
+      app_store_connect: Red Clip 2
     environment:
       xcode: latest
       vars:
@@ -43,7 +43,7 @@ workflows:
           ASC_ISSUER_ID=$(printf '%s' "${ASC_ISSUER_ID:-$APP_STORE_CONNECT_ISSUER_ID}" | tr -d '[:space:]')
           KEY="${ASC_KEY_P8:-$APP_STORE_CONNECT_PRIVATE_KEY}"
           if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$KEY" ]; then
-            echo "::error title=API key::Add the App Store Connect key in Codemagic: settings › Integrations › Developer Portal, named Red Clip."
+            echo "::error title=API key::Add the App Store Connect key in Codemagic: settings › Integrations › Developer Portal, named Red Clip 2."
             exit 1
           fi
           mkdir -p "$SIGNING" ~/.appstoreconnect/private_keys
