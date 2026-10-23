@@ -26,7 +26,7 @@ enum HelpTopic: String, CaseIterable {
         case .inputMeter: return "Input Meter"
         case .outputMeter: return "Output Meter"
         case .screen:
-            return "The last 120 ms of audio. Grey is the signal going into the clipper, red is the clipped output, both lined up in time. The dashed lines are the ceiling, above and below zero: anything grey poking past them is what gets clipped off."
+            return "The last 120 ms of audio in dBFS. Grey is the signal going into the clipper, red is the clipped output, both lined up in time. The dashed lines are the ceiling, above and below zero: anything grey poking past them is what gets clipped off. Double-tap to zoom."
         case .clipReadout: return "Clip"
         case .input: return "Input"
         case .drive: return "Drive"
@@ -66,11 +66,11 @@ enum HelpTopic: String, CaseIterable {
         case .power:
             return "Turns the Red Clip engine off. In a DAW the audio passes straight through untouched and uses no CPU."
         case .inputMeter:
-            return "Level coming in, left and right, after the Input knob. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment."
+            return "Level coming in, left and right, after the Input knob. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment. Double-tap it to zoom the screen."
         case .outputMeter:
-            return "Level going out, left and right. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment."
+            return "Level going out, left and right. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment. Double-tap it to zoom the screen."
         case .screen:
-            return "The last 10 seconds of audio. The dim trace is what goes into the clipper and the bright trace is the output. Anything above the dashed ceiling line glows white and lights up the line: that's the part being clipped off."
+            return "The last 120 ms of audio in dBFS. Grey is the signal going into the clipper, so turning Input up pushes it toward the dashed ceiling lines; red is the final output. Anything grey past the lines is what gets clipped off. Double-tap the screen or either meter to zoom: +6 to -36, +4 to -24, +2 to -12 dB."
         case .clipReadout:
             return "How far the signal is going past the ceiling right now, in dB. 0.0 means nothing is being clipped."
         case .input:
@@ -78,7 +78,7 @@ enum HelpTopic: String, CaseIterable {
         case .drive:
             return "Pushes the signal harder into Red and the clipper without changing the input meter. More Drive means more clipping."
         case .ceiling:
-            return "The level where clipping starts, from 0 down to -12 dB. The clipped signal never goes above it."
+            return "The level where clipping starts, from 0 down to -36 dB. The clipped signal never goes above it. Pulling it down moves the clip line (and Red and Fire with it) down to meet a quiet track, instead of turning the track up into it."
         case .mix:
             return "Blends the processed sound with the dry signal. 100% is fully processed, lower brings back some of the original. With the mixer unlinked, this knob sets the Wet level."
         case .mixer:

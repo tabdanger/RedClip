@@ -53,6 +53,16 @@ final class ScopeTests: XCTestCase {
 
     // MARK: Clipping, read from the clipper's own input and output
 
+    func testCeilingReachesDownToMinus36() throws {
+        XCTAssertEqual(Param.ceilingDB.range, -36...0)
+        // Gold Clip-style low-level clipping: no Input or Drive, the ceiling comes down to the signal
+        let ceiling: Float = -30, c = pow(10, ceiling / 20)
+        let h = try settled([.oversampling: 0, .clipMode: 0, .ceilingDB: ceiling])
+        let r = screen(h, columns: oneSamplePerColumn)
+        XCTAssertEqual(r.outMax.max()!, c, accuracy: 1e-4, "the output sits on a -30 dB ceiling")
+        XCTAssertGreaterThan(r.clipInMax.max()!, 0.5, "the clipper's input is the track's own level")
+    }
+
     func testHardClippingFlattensPeaksAtTheCeiling() throws {
         let ceiling: Float = -6, c = pow(10, ceiling / 20)
         let h = try settled([.oversampling: 0, .clipMode: 0, .driveDB: 9, .ceilingDB: ceiling])
