@@ -8,25 +8,27 @@ enum Param: Int, CaseIterable {
     case inputDB, driveDB, ceilingDB, mix, outputDB, clipMode, oversampling, link, bypass
     // Gold Clip extras
     case gold, goldMode, unity, alchemy, boxTone, delta
+    // parallel mixer: with mixUnlink on, Dry and Wet are two separate levels instead of the Mix knob
+    case mixUnlink, dry, wet
 
     var range: ClosedRange<Float> {
         switch self {
         case .inputDB, .outputDB: return -12...12
         case .driveDB: return 0...12
         case .ceilingDB: return -12...0
-        case .mix, .gold, .alchemy: return 0...100
+        case .mix, .gold, .alchemy, .dry, .wet: return 0...100
         case .clipMode: return 0...2        // 0 Hard, 1 Classic (soft knee), 2 Modern (medium knee)
         case .oversampling: return 0...2   // 1x, 2x, 4x
         case .goldMode: return 0...1        // 0 Modern (up to +2.5 dB), 1 Classic (up to +6 dB)
         case .boxTone: return 0...2         // 0 Flat, 1 Modern, 2 Classic
-        case .link, .bypass, .unity, .delta: return 0...1
+        case .link, .bypass, .unity, .delta, .mixUnlink: return 0...1
         }
     }
 
     var defaultValue: Float {
         switch self {
         case .ceilingDB: return -0.3
-        case .mix: return 100
+        case .mix, .wet: return 100
         case .clipMode: return 2
         case .oversampling: return 1
         default: return 0
@@ -371,7 +373,8 @@ final class ClipDSP: @unchecked Sendable {
     private var curBox = -1
 
     // smoothed controls
-    private var sIn: Float = 1, sDrive: Float = 1, sOut: Float = 1, sMix: Float = 1
+    private var sIn: Float = 1, sDrive: Float = 1, sOut: Float = 1
+    private var sWet: Float = 1, sDry: Float = 0   // parallel mixer levels (from Mix, or Dry / Wet when unlinked)
     private var sCeil: Float = 1, sGold: Float = 0, sAlch: Float = 0, sBypass: Float = 0
     private var sUnity: Float = 0
     private let smooth: Float          // 15 ms: knob moves and immediate automation, click-free
@@ -424,6 +427,19 @@ final class ClipDSP: @unchecked Sendable {
         sIn = dbToGain(p[Param.inputDB.rawValue])
         sOut = dbToGain(p[Param.outputDB.rawValue])
         sCeil = dbToGain(p[Param.ceilingDB.rawValue])
+        let levels = ClipDSP.mixLevels(p)
+        sWet = levels.wet; sDry = levels.dry
+    }
+
+    /// The parallel mixer's two levels (0...1). Linked, Mix crossfades them (wet = Mix,
+    /// dry = 1 - Mix); unlinked, Dry and Wet are set on their own, so 100 % dry can sit under
+    /// any amount of clipped signal. Also says which control drives each level, for host ramps.
+    static func mixLevels(_ p: AtomicFloats) -> (wet: Float, dry: Float, wetParam: Param, dryParam: Param) {
+        if p[Param.mixUnlink.rawValue] > 0.5 {
+            return (p[Param.wet.rawValue] / 100, p[Param.dry.rawValue] / 100, .wet, .dry)
+        }
+        let mix = p[Param.mix.rawValue] / 100
+        return (mix, 1 - mix, .mix, .mix)
     }
 
     deinit { osCoeffs.deallocate() }
@@ -486,7 +502,8 @@ final class ClipDSP: @unchecked Sendable {
         let tGold = p[Param.gold.rawValue] / 100 * Curves.goldMaxDB(classic: goldClassic)   // in dB
         let tUnity: Float = unity ? 1 : 0
         let tAlch = p[Param.alchemy.rawValue] / 100
-        let tMix = p[Param.mix.rawValue] / 100
+        let levels = ClipDSP.mixLevels(p)
+        let tWet = levels.wet, tDry = levels.dry
         let tBypass: Float = p[Param.bypass.rawValue] > 0.5 ? 1 : 0
 
         if shared.loudnessReset.value != 0, shared.loudnessReset.exchange(0) != 0 {
@@ -501,18 +518,21 @@ final class ClipDSP: @unchecked Sendable {
             gliding & (1 << UInt32(q.rawValue)) != 0 ? (target - now) * per : 0
         }
         let dIn = step(.inputDB, tIn, sIn), dOut = step(.outputDB, tOut, sOut)
-        let dDrive = step(.driveDB, tDrive, sDrive), dMix = step(.mix, tMix, sMix)
+        let dDrive = step(.driveDB, tDrive, sDrive)
+        let dWet = step(levels.wetParam, tWet, sWet), dDry = step(levels.dryParam, tDry, sDry)
         let dCeil = step(.ceilingDB, tCeil, sCeil), dGold = step(.gold, tGold, sGold)
         let dAlch = step(.alchemy, tAlch, sAlch)
         @inline(__always) func ramps(_ q: Param) -> Bool { gliding & (1 << UInt32(q.rawValue)) != 0 }
-        let gIn = ramps(.inputDB), gOut = ramps(.outputDB), gDrive = ramps(.driveDB), gMix = ramps(.mix)
+        let gIn = ramps(.inputDB), gOut = ramps(.outputDB), gDrive = ramps(.driveDB)
+        let gWet = ramps(levels.wetParam), gDry = ramps(levels.dryParam)
         let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy)
         let ks = smooth
         var ringPos = shared.ringTotal.value          // only this thread writes it
 
         for n in 0..<frames {
             sIn += gIn ? dIn : ks * (tIn - sIn); sOut += gOut ? dOut : ks * (tOut - sOut)
-            sDrive += gDrive ? dDrive : ks * (tDrive - sDrive); sMix += gMix ? dMix : ks * (tMix - sMix)
+            sDrive += gDrive ? dDrive : ks * (tDrive - sDrive)
+            sWet += gWet ? dWet : ks * (tWet - sWet); sDry += gDry ? dDry : ks * (tDry - sDry)
             sCeil += gCeil ? dCeil : ks * (tCeil - sCeil); sGold += gGold ? dGold : ks * (tGold - sGold)
             sAlch += gAlch ? dAlch : ks * (tAlch - sAlch); sBypass += ks * (tBypass - sBypass)
             sUnity += ks * (tUnity - sUnity)
@@ -569,7 +589,9 @@ final class ClipDSP: @unchecked Sendable {
                 if delta {
                     out = (wet - ref * sDrive) * sOut      // only what the clipper changed
                 } else {
-                    out = (wet * sMix + ref * (1 - sMix)) * sOut
+                    // parallel mix: ref is the dry signal through the same oversampling
+                    // filters as wet, so the two stay sample- and phase-aligned (no combing)
+                    out = (wet * sWet + ref * sDry) * sOut
                 }
                 out = out + sBypass * (raw - out)
 

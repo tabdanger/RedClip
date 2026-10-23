@@ -1,10 +1,12 @@
 New in this build:
+- Parallel mixer: tap the value under MIX (or Menu > Settings > Parallel Mixer) and choose UNLINKED to set Dry and Wet separately. Keep 100% dry and blend in a heavily clipped wet for bottom-up distortion, or clip gently and add peaks back with the dry. While unlinked, the MIX knob turns Wet. New Parallel Pack presets show it off.
 - The screen is now live. Grey is your input and red is what comes out, read straight from the audio as it plays. Turn Input, Drive, Ceiling, Red, Fire, Mix, Output, the clip modes or Bypass and you should see the red trace change as you hear it. Where the clipper shaves peaks off, the cut part is shaded and the ceiling line lights up.
 - Pause freezes the screen, power off clears it, silence is a flat line.
 - Logic automation is now sample-accurate, and automation ramps play out over their full length.
 - Red Clip runs on iPhone as well as iPad, with matching red and Platinum faceplates.
 
 Please try:
+- Unlink the mixer, set Dry 100% and Wet low, then crank Drive: the distortion should sit under the track with no phasey or hollow sound at 1x, 2x and 4x.
 - Play the demo or your own file and move each knob while watching the screen.
 - Hard, Classic and Modern clip modes with Drive up: Hard should show flat tops, the others rounded ones.
 - In Logic on iPad, draw automation curves on Ceiling or Output and listen for clicks.
