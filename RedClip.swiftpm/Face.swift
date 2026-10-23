@@ -36,6 +36,8 @@ final class FaceModel: ObservableObject {
     /// Transient custom menu state; never saved in an audio preset.
     @Published var rcMenuRequest: RCMenuRequest?
     var loadSample: ((URL) -> Void)?
+    /// The app's Clip Clock reset: scan the whole file again (nil in a DAW).
+    var clipClockReset: (() -> Void)?
     var loadDemo: (() -> Void)?
 
     init(isPlugin: Bool) {
