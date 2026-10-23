@@ -1,15 +1,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The standalone app: the faceplate with the transport strip under it, scaled to fit the screen.
+/// The standalone app: the faceplate and its transport, scaled to fit the screen.
 @MainActor
 struct AppRootView: View {
     @ObservedObject var audio: AudioController
     @ObservedObject var face: FaceModel
 
-    /// iPad: the faceplate with its transport strip picture under it. iPhone: the portrait face,
-    /// whose transport is part of the picture. Same controls, same behaviour.
-    let layout = PlateLayout.current
+    /// The iPad and iPhone faces both have their transport built into the picture (the strip
+    /// branch below is for a face that doesn't). Same controls, same behaviour.
+    private var layout: PlateLayout { .current(face.faceplate) }
 
     var body: some View {
         GeometryReader { geo in
