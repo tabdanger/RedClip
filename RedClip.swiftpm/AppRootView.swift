@@ -137,7 +137,7 @@ struct AppRootView: View {
         }
         .buttonStyle(.plain)
         .frame(width: T.samples.width, height: T.samples.height)
-        .rcMenuAnchor(.samples)
+        .rcMenuAnchor(.samples, face: face)
         .accessibilityLabel("Open samples menu")
     }
 

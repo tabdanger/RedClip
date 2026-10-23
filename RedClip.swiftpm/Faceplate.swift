@@ -52,7 +52,7 @@ struct FaceplateView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open preset menu, \(params.presetName)")
-            .rcMenuAnchor(.presets)
+            .rcMenuAnchor(.presets, face: face)
             .helpTarget(.presets, face)
             .place(L.presetName)
 
@@ -176,7 +176,7 @@ struct FaceplateView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open parallel mixer, \(text)")
-        .rcMenuAnchor(.mixer)
+        .rcMenuAnchor(.mixer, face: face)
         .helpTarget(.mixer, face)
         .place(k.value)
     }

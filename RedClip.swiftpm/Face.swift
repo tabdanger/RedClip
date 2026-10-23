@@ -15,6 +15,7 @@ final class FaceModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(helpEnabled, forKey: Self.helpKey)
             if !helpEnabled { helpTopic = nil }
+            helpTimedOut = nil
         }
     }
     @Published private(set) var helpTopic: HelpTopic?
@@ -54,27 +55,39 @@ final class FaceModel: ObservableObject {
 
     func togglePower() { setPowered(!isPowered) }
 
-    /// Shows a control's bubble (only while help is switched on); it fades after 6 seconds.
+    /// How long a help bubble stays up, counted from when it appears.
+    static let helpBubbleSeconds = 3.5
+    /// A bubble that timed out while its control was still being touched; it stays hidden until
+    /// that touch ends (or goes quiet for half a second), so turning a knob doesn't pop it back up.
+    private var helpTimedOut: HelpTopic?
+    private var helpTimedOutTouch = Date.distantPast
+
+    /// Shows a control's bubble (only while help is switched on); it fades 3.5 seconds after it appears.
     func showHelp(_ topic: HelpTopic) {
-        guard helpEnabled else { return }
-        if helpTopic != topic { helpTopic = topic }
-        scheduleHelpHide(topic, after: 6)
-    }
-
-    /// The pointer left a control: keep the bubble a moment so it can still be read.
-    func hoverEnded(_ topic: HelpTopic) {
-        guard helpTopic == topic else { return }
-        scheduleHelpHide(topic, after: 1.5)
-    }
-
-    private func scheduleHelpHide(_ topic: HelpTopic, after seconds: Double) {
+        guard helpEnabled, helpTopic != topic else { return }
+        if helpTimedOut == topic, Date().timeIntervalSince(helpTimedOutTouch) < 0.5 {
+            helpTimedOutTouch = Date()
+            return
+        }
+        helpTopic = topic
+        helpTimedOut = nil
         helpHide?.cancel()
         let hide = DispatchWorkItem { [weak self] in
-            if self?.helpTopic == topic { self?.helpTopic = nil }
+            guard let self, self.helpTopic == topic else { return }
+            self.helpTopic = nil
+            self.helpTimedOut = topic
+            self.helpTimedOutTouch = Date()
         }
         helpHide = hide
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: hide)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.helpBubbleSeconds, execute: hide)
     }
+
+    /// The finger lifted or the pointer left a control: touching it again shows its bubble again.
+    func helpTouchEnded(_ topic: HelpTopic) {
+        if helpTimedOut == topic { helpTimedOut = nil }
+    }
+
+    func hoverEnded(_ topic: HelpTopic) { helpTouchEnded(topic) }
 }
 
 /// One file in the Samples folder, for the top menu.
