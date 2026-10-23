@@ -4,7 +4,7 @@
 #
 # Setup in Codemagic (once):
 #   Personal account (or team) settings › Integrations › Developer Portal › Manage keys › Add key:
-#   name it exactly  Red Clip  and upload the AuthKey_XXXXXXXXXX.p8 of an App Store Connect API key
+#   name it exactly  Red Clip 2  and upload the AuthKey_XXXXXXXXXX.p8 of an App Store Connect API key
 #   with the Admin role, with its Issuer ID and Key ID. Nothing else is needed: the Team ID is read
 #   from the bundle ID, and the build number is one more than the latest build in App Store Connect.
 #   To force a build number, add an environment variable REDCLIP_BUILD (digits) in the app settings.
@@ -14,7 +14,7 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      app_store_connect: Red Clip
+      app_store_connect: Red Clip 2
     environment:
       xcode: latest
       vars:
@@ -43,17 +43,22 @@ workflows:
           ASC_ISSUER_ID=$(printf '%s' "${ASC_ISSUER_ID:-$APP_STORE_CONNECT_ISSUER_ID}" | tr -d '[:space:]')
           KEY="${ASC_KEY_P8:-$APP_STORE_CONNECT_PRIVATE_KEY}"
           if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$KEY" ]; then
-            echo "::error title=API key::Add the App Store Connect key in Codemagic: settings › Integrations › Developer Portal, named Red Clip."
+            echo "::error title=API key::Add the App Store Connect key in Codemagic: settings › Integrations › Developer Portal, named Red Clip 2."
             exit 1
           fi
           mkdir -p "$SIGNING" ~/.appstoreconnect/private_keys
-          printf '%s\n' "$KEY" | tr -d '\r' > "$SIGNING/AuthKey.p8"
+          ASC_KEY_ID="$ASC_KEY_ID" P8_TEXT="$KEY" python3 .github/scripts/p8.py "$SIGNING/AuthKey.p8" || exit 1
           cp "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$SIGNING/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2>/dev/null; then
-            echo "::error title=API key::The uploaded .p8 isn't a readable private key. Upload the file again, exactly as downloaded."
+          if ! openssl pkey -in "$SIGNING/AuthKey.p8" -noout 2> "$RUNNER_TEMP/pkey.log"; then
+            echo "openssl: $(head -3 "$RUNNER_TEMP/pkey.log" | tr '\n' ' ')"
+            echo "::error title=API key::The uploaded .p8 isn't a readable private key. In Codemagic, delete the Red Clip key and add it again with the .p8 file exactly as Apple downloaded it."
             exit 1
           fi
+          echo "The API key reads fine. Key ID: ${ASC_KEY_ID} (${#ASC_KEY_ID} characters, should be 10). Issuer ID: ${ASC_ISSUER_ID:0:8}... (${#ASC_ISSUER_ID} characters, should be 36)."
+          [ ${#ASC_KEY_ID} -ne 10 ] && echo "::warning title=Key ID::Is ${#ASC_KEY_ID} characters long; an App Store Connect Key ID is 10."
+          [ ${#ASC_ISSUER_ID} -ne 36 ] && echo "::warning title=Issuer ID::Is ${#ASC_ISSUER_ID} characters long; an Issuer ID is 36 (like 69a6de7e-....)."
+          true
           {
             echo "ASC_KEY_ID=$ASC_KEY_ID"
             echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
