@@ -5,7 +5,7 @@ import SwiftUI
 // Works the same as Console E's "?" key: it switches help bubbles on and off (remembered between
 // launches). With help on, every control still works normally, and touching it, or hovering over
 // it with a trackpad, mouse or Apple Pencil, pops up a small bubble beside it explaining what it
-// does. The bubble fades after a few seconds. Meters and readouts show theirs when touched.
+// does. The bubble fades 3.5 seconds after it appears. Meters and readouts show theirs when touched.
 
 enum HelpTopic: String, CaseIterable {
     case help, presets, ab, undo, power
@@ -130,7 +130,9 @@ struct HelpTarget: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in face.showHelp(topic) })
+            .simultaneousGesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in face.showHelp(topic) }
+                .onEnded { _ in face.helpTouchEnded(topic) })
             .onHover { inside in
                 if inside { face.showHelp(topic) } else { face.hoverEnded(topic) }
             }
