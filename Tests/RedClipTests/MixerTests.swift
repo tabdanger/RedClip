@@ -37,7 +37,7 @@ final class MixerTests: XCTestCase {
             let wet = try output(base.merging([.dry: 0, .wet: 100]) { $1 })
             XCTAssertLessThan(worst(both, zip(dry, wet).map { $0 + $1 }), 1e-5, "oversampling \(os)")
             // 100 % dry under the clipped signal: louder than either alone (bottom-up)
-            XCTAssertGreaterThan(both.map(abs).max()!, wet.map(abs).max()! + 0.1)
+            XCTAssertGreaterThan(both.map { abs($0) }.max()!, wet.map { abs($0) }.max()! + 0.1)
         }
     }
 
