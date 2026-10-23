@@ -135,7 +135,17 @@ struct FaceplateView: View {
             PlateClipNumber(reader: face.meters, center: CGPoint(x: L.clipNumber.x - L.clip.minX, y: L.clipNumber.y - L.clip.minY),
                             fontSize: L.clipFont)
                 .helpTarget(.clipReadout, face).place(L.clip)
+            clipClock
         }
+    }
+
+    /// The Clip Clock panel in the bottom-left corner of the screen's glass (screen units, 258 high).
+    private var clipClock: some View {
+        let s = L.screen.height / PlateScreen.H, size = ClipClockPanel.size
+        return ClipClockPanel(clock: face.shared.clipClock)
+            .scaleEffect(s)
+            .helpTarget(.clipClock, face)
+            .place(x: L.screen.minX + 60 * s, y: L.screen.minY + 166 * s, w: size.width * s, h: size.height * s)
     }
 
     // MARK: Knobs (Input, Drive, Ceiling, Mix, Output, Red, Fire)

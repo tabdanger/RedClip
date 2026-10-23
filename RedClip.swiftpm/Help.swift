@@ -14,6 +14,7 @@ enum HelpTopic: String, CaseIterable {
     case red, redStyle, unity, fire, boxTone, delta
     case clipMode, link, oversampling, bypass
     case play, load, samples, demo, export
+    case clipClock
 
     var title: String {
         switch self {
@@ -48,6 +49,7 @@ enum HelpTopic: String, CaseIterable {
         case .samples: return "Samples"
         case .demo: return "Demo"
         case .export: return "Export"
+        case .clipClock: return "Clip Clock"
         }
     }
 
@@ -84,11 +86,11 @@ enum HelpTopic: String, CaseIterable {
         case .output:
             return "The final level after everything else. With LINK on, it moves the opposite way to Input."
         case .red:
-            return "Converter saturation modelled on the Lavry Gold. It rounds off peaks above a threshold, then adds the gain back, so the track gets denser and louder. Up to +2.5 dB in Modern and +6 dB in Classic."
+            return "Adds up to 2.5 dB (Modern) or 6 dB (Classic) of non-linear gain. Quiet material gets the full boost, and the boost fades away to nothing as the signal reaches the ceiling, so the track gets louder while the peaks below the clip point stay intact."
         case .redStyle:
-            return "Modern adds up to 2.5 dB and starts rounding 5 dB below the ceiling. Classic adds up to 6 dB and starts 12 dB below, like Lavry's +6 dB mode."
+            return "How much Red can add: up to 2.5 dB in Modern, up to 6 dB in Classic. Either way the extra gain fades out to 0 dB right at the ceiling."
         case .unity:
-            return "Takes away the gain Red adds. The body of the track stays at the same loudness while the peaks come down. Handy for hearing what Red does without it just sounding louder."
+            return "Takes the gain Red adds back off after all other processing. If Red adds 6 dB, the peaks come down 6 dB while the track keeps its perceived loudness, so you gain headroom without touching your transients."
         case .fire:
             return "Smooths the bright, edgy top end that clipping can leave. It dips the highs by up to about 1 dB, only when the signal is close to the ceiling."
         case .boxTone:
@@ -96,7 +98,7 @@ enum HelpTopic: String, CaseIterable {
         case .delta:
             return "Plays only the difference between the input and the processed sound, so you hear exactly what Red Clip is adding or taking away."
         case .clipMode:
-            return "Hard clips straight at the ceiling. Classic has a soft knee and rounds peaks off gently. Modern sits in between with a medium knee."
+            return "Hard works like Fruity Soft Clipper: clean up to 3 dB under the ceiling, then a smooth bend that lands flat on it. Classic has a soft knee and rounds peaks off gently. Modern sits in between with a medium knee."
         case .link:
             return "Ties Input and Output together. Turn Input up and Output comes down by the same amount, so you can drive harder at the same level."
         case .oversampling:
@@ -113,6 +115,8 @@ enum HelpTopic: String, CaseIterable {
             return "Loads the built-in drum loop so you can try Red Clip straight away."
         case .export:
             return "Renders the whole file through your current settings to a 24-bit WAV you can save or share."
+        case .clipClock:
+            return "Finds the spot in the song where Red Clip clips hardest. MAX CLIP is the most the signal has gone past the ceiling, MIN:SEC is when it happened. Play the record through, go to that spot and set Drive, Red and Fire so the loudest moment still clips cleanly. The arrow starts a new pass."
         }
     }
 }

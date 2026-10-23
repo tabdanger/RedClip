@@ -63,6 +63,7 @@ final class SharedState: @unchecked Sendable {
     let waveRate: AtomicFloat    // columns per second
     let power: AtomicInt         // 0 = power button off (plug-in passes audio through untouched)
     let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
+    let clipClock = ClipClockState()   // biggest clip and where in the song it happened (ClipClock.swift)
 
     // Sample rings for the screen (oscilloscope) and the LED meters. The audio thread writes one
     // value per sample into each; the UI copies the newest stretch at display rate.
@@ -202,15 +203,23 @@ private let ellipticSOS: [Biquad] = [
 // MARK: - Shaping curves (also used by the UI transfer display)
 
 enum Curves {
-    /// Knee fraction per clip style: 0 Hard (no knee), 1 Classic (soft knee), 2 Modern (medium knee).
+    /// Knee fraction per clip style: 1 Classic (soft knee), 2 Modern (medium knee). Hard (0) is the
+    /// Fruity Soft Clipper style curve below, marked by a knee of 0.
     static func knee(_ mode: Int) -> Float { mode == 1 ? 0.35 : (mode == 2 ? 0.15 : 0) }
 
-    /// Clipper: unity below the knee, tanh rounding into the ceiling, never above it.
+    /// Hard, after FL Studio's Fruity Soft Clipper: untouched up to a threshold 3 dB under the
+    /// ceiling, then a parabola that bends into the ceiling and meets it flat (no corner, so
+    /// less harsh than a brick wall), landing on it at 2c - t (about 2.2 dB over); anything
+    /// hotter is held exactly on the ceiling.
+    static let hardThreshold: Float = 0.70795          // -3 dB re the ceiling
+
+    /// Clipper: unity below the knee, rounding into the ceiling, never above it.
     @inline(__always) static func clip(_ x: Float, ceiling c: Float, knee: Float) -> Float {
         let a = abs(x)
         let y: Float
         if knee <= 0 {
-            y = min(a, c)
+            let t = c * hardThreshold, r = c - t
+            if a <= t { y = a } else if a >= c + r { y = c } else { let d = a - t; y = a - d * d / (4 * r) }
         } else {
             let t = c * (1 - knee)
             if a <= t { y = a } else { let r = c - t; y = t + r * tanh((a - t) / r) }
@@ -221,25 +230,35 @@ enum Curves {
     /// Most gain each Gold style adds at 100 %: Modern 2.5 dB, Classic 6 dB.
     static func goldMaxDB(classic: Bool) -> Float { classic ? 6 : 2.5 }
 
-    /// Gold, modelled on Lavry Gold soft saturation. For G dB of Gold (relative to the ceiling):
-    /// untouched below -2G dB, peaks above that rounded off progressively (tape-like, no time
-    /// constants) so they never pass -G dB, then G dB of make-up gain lifts everything back so
-    /// the peaks land on the ceiling. Lavry's +6 dB mode is exactly this with G = 6 (threshold
-    /// -12 dBFS, peaks held under -6 dBFS). Returns the saturated sample BEFORE make-up gain.
-    @inline(__always) static func goldSaturate(_ x: Float, threshold t: Float, limit l: Float) -> Float {
-        let a = abs(x)
-        if a <= t { return x }
-        let r = l - t
-        let y = t + r * tanh((a - t) / r)
-        return x < 0 ? -y : y
+    /// Red (Gold processing): up to G dB of non-linear gain. Low-level material gets the full
+    /// G dB; as the signal approaches the ceiling the gain dies away exponentially, to exactly
+    /// 0 dB at the ceiling, so peaks are never pushed past it by Red. At and above the ceiling
+    /// Red does nothing and the clipper takes over. In dB re the ceiling (L <= 0):
+    ///     gain(L) = G * (1 - e^(L / (1.5 G)))
+    /// The 1.5 G spread keeps the curve monotonic (it meets the ceiling with a slope of 1/3).
+    /// In amplitude that is x * e^(g (1 - a^k)), a = |x| / c, with g and k from redShape.
+    static let redSpread: Float = 1.5
+    private static let ln10: Float = 2.302585
+
+    /// (g, k) for G dB of Red.
+    static func redShape(_ gDB: Float) -> (g: Float, k: Float) {
+        (gDB * ln10 / 20, 20 / (ln10 * redSpread * max(gDB, 0.001)))
     }
 
-    /// The whole Gold stage as the UI's transfer display would draw it.
+    @inline(__always) static func red(_ x: Float, ceiling c: Float, g: Float, k: Float) -> Float {
+        let a = abs(x) / c
+        if a >= 1 { return x }
+        return x * exp(g * (1 - pow(a, k)))
+    }
+
+    /// The whole Red stage as the UI's transfer display would draw it. Unity takes G dB off
+    /// after everything else, so peaks come down by G dB and the body keeps its loudness.
     static func gold(_ x: Float, ceiling c: Float, amount: Float, classic: Bool, unity: Bool) -> Float {
-        let g = amount * goldMaxDB(classic: classic)
-        guard g > 0.01 else { return x }
-        let y = goldSaturate(x, threshold: c * dbToGain(-2 * g), limit: c * dbToGain(-g))
-        return unity ? y : y * dbToGain(g)
+        let gDB = amount * goldMaxDB(classic: classic)
+        guard gDB > 0.01 else { return x }
+        let shape = redShape(gDB)
+        let y = red(x, ceiling: c, g: shape.g, k: shape.k)
+        return unity ? y * dbToGain(-gDB) : y
     }
 }
 
@@ -381,8 +400,14 @@ final class ClipDSP: @unchecked Sendable {
 
     // Gold (per base-rate sample, shared by both channels and every oversampled sub-sample)
     private var goldOn = false
-    private var goldT: Float = 1, goldL: Float = 1, goldMakeup: Float = 1
+    private var goldG: Float = 0, goldK: Float = 1   // Red's curve for this sample (Curves.redShape)
+    private var unityGain: Float = 1                  // Unity: G dB off after everything else
     private var clipOver: Float = 1   // largest (signal into clipper / ceiling) this block
+
+    /// Clip Clock: song position (seconds) of this block's first sample, set by whoever calls
+    /// process() (the app's playhead, the host's transport). Negative: not playing, don't record.
+    var songTime: Double = -1
+    private var clockBest: Float = 1  // biggest clipOver since the last Clip Clock reset
 
     // loudness: 100 ms blocks, K-weighted, double-precision sums
     private let lufsBlock: Int
@@ -510,6 +535,14 @@ final class ClipDSP: @unchecked Sendable {
             loudIn.reset(); loudOut.reset()
         }
 
+        let clock = shared.clipClock
+        if clock.reset.value != 0, clock.reset.exchange(0) != 0 {
+            clockBest = 1
+            clock.maxDB.value = 0
+            clock.seconds.value = -1
+        }
+        var clockOver: Float = 1, clockAt = 0         // this block's biggest clip and its sample
+
         var inPeak: (Float, Float) = (0, 0), outPeak: (Float, Float) = (0, 0)
         clipOver = 1
         // per control: ramping -> fixed step per sample to the target; otherwise -> 0 (smoother)
@@ -538,12 +571,15 @@ final class ClipDSP: @unchecked Sendable {
             sUnity += ks * (tUnity - sUnity)
             let c = sCeil
 
-            // Gold for this sample: threshold -2G, peak limit -G (re ceiling), make-up +G unless Unity
+            // Red for this sample: up to G dB of gain fading to 0 dB at the ceiling; Unity takes
+            // the G dB back off at the very end
             goldOn = sGold > 0.01
             if goldOn {
-                goldT = c * dbToGain(-2 * sGold)
-                goldL = c * dbToGain(-sGold)
-                goldMakeup = dbToGain(sGold * (1 - sUnity))
+                let shape = Curves.redShape(sGold)
+                goldG = shape.g; goldK = shape.k
+                unityGain = sUnity > 0.0001 ? dbToGain(-sGold * sUnity) : 1
+            } else {
+                unityGain = 1
             }
 
             var kIn: Float = 0, kOut: Float = 0
@@ -593,6 +629,7 @@ final class ClipDSP: @unchecked Sendable {
                     // filters as wet, so the two stay sample- and phase-aligned (no combing)
                     out = (wet * sWet + ref * sDry) * sOut
                 }
+                out *= unityGain
                 out = out + sBypass * (raw - out)
 
                 let ao = abs(out)
@@ -603,6 +640,8 @@ final class ClipDSP: @unchecked Sendable {
                 let ki = s.kIn2.process(s.kIn1.process(x)); kIn += ki * ki
                 let ko = s.kOut2.process(s.kOut1.process(out)); kOut += ko * ko
             }
+
+            if clipOver > clockOver { clockOver = clipOver; clockAt = n }
 
             // screen + meter rings. The output comes out of the oversampling filters late (the
             // up-sampling filter and the down-sampling filter each delay it about 2 samples at
@@ -662,13 +701,20 @@ final class ClipDSP: @unchecked Sendable {
         m.storeMax(Meter.outPeakR.rawValue, outPeak.1)
         if clipOver > 1 { m[Meter.clip.rawValue] = 1 }
         m.storeMax(Meter.reductionDB.rawValue, gainToDB(clipOver))
+
+        // Clip Clock: a new biggest clip while the song is playing; publish it and where it was
+        if songTime >= 0 && clockOver > clockBest {
+            clockBest = clockOver
+            clock.seconds.value = Float(songTime + Double(clockAt) / sampleRate)
+            clock.maxDB.value = gainToDB(clockOver)
+        }
     }
 
-    /// Gold (Lavry-style soft saturation + make-up) -> clipper -> Alchemy, at the oversampled rate.
+    /// Red (Gold processing) -> clipper -> Alchemy, at the oversampled rate.
     @inline(__always) private func shape(_ x: Float, _ s: Channel, _ c: Float, _ knee: Float,
                                          _ goldClassic: Bool, _ aCoef: Float) -> Float {
         var y = x
-        if goldOn { y = Curves.goldSaturate(y, threshold: goldT, limit: goldL) * goldMakeup }
+        if goldOn { y = Curves.red(y, ceiling: c, g: goldG, k: goldK) }
         let a = abs(y)
         colPre = max(colPre, a)
         lastPre = y

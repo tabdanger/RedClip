@@ -4,6 +4,7 @@ New in this build:
 - Pause freezes the screen, power off clears it, silence is a flat line.
 - Logic automation is now sample-accurate, and automation ramps play out over their full length.
 - Red Clip runs on iPhone as well as iPad, with matching red and Platinum faceplates.
+- Clip Clock (bottom left of the screen): MAX CLIP holds the most the signal went past the ceiling, MIN:SEC shows where in the song it happened. The arrow resets it. In Logic it follows the song position.
 
 Please try:
 - Unlink the mixer, set Dry 100% and Wet low, then crank Drive: the distortion should sit under the track with no phasey or hollow sound at 1x, 2x and 4x.
@@ -11,3 +12,4 @@ Please try:
 - Hard, Classic and Modern clip modes with Drive up: Hard should show flat tops, the others rounded ones.
 - In Logic on iPad, draw automation curves on Ceiling or Output and listen for clicks.
 - The same things on iPhone.
+- Play a whole song, check the Clip Clock time, jump there and confirm it's the loudest hit. Then reset, change Drive and play again.

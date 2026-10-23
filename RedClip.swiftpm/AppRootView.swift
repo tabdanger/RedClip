@@ -81,7 +81,7 @@ struct AppRootView: View {
                 .frame(width: T.fileName.width, alignment: .leading)
                 .place(T.fileName)
 
-            // progress along the picture's groove; drag to seek
+            // progress along the picture's groove; drag to seek (quiet until you let go)
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
                 GeometryReader { geo in
                     let w = geo.size.width
@@ -96,9 +96,12 @@ struct AppRootView: View {
                     }
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { g in
-                        audio.seek(to: Double(min(max(g.location.x / w, 0), 1)))
-                    })
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { g in
+                            audio.beginScrub()          // silent while dragging
+                            audio.seek(to: Double(min(max(g.location.x / w, 0), 1)))
+                        }
+                        .onEnded { _ in audio.endScrub() })
                 }
             }
             .place(T.progress)

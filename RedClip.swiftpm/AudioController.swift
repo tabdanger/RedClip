@@ -100,13 +100,29 @@ final class AudioController: ObservableObject {
     func play() {
         if !isPowered { face.setPowered(true) }
         if !engine.isRunning { try? engine.start() }
-        playFlag.value = 1
+        if !scrubbing { playFlag.value = 1 }
         isPlaying = true
     }
 
     func stop() {
         playFlag.value = 0
         isPlaying = false
+    }
+
+    /// Dragging the playhead: the audio goes quiet while the finger moves and carries on from
+    /// wherever it lands, so scrubbing never plays a burst of sound (or feeds the Clip Clock).
+    private var scrubbing = false
+
+    func beginScrub() {
+        guard !scrubbing else { return }
+        scrubbing = true
+        playFlag.value = 0
+    }
+
+    func endScrub() {
+        guard scrubbing else { return }
+        scrubbing = false
+        if isPlaying { playFlag.value = 1 }
     }
 
     func seek(to fraction: Double) {
@@ -179,6 +195,7 @@ final class AudioController: ObservableObject {
         let ph = playhead, flag = playFlag, seek = seekRequest, sL = scratchL, sR = scratchR, chunk = AudioController.chunk
         ph.value = 0          // the engine is stopped here, so nothing renders while these reset
         clearScope()
+        shared.clipClock.requestReset()                // a new song starts a new Clip Clock pass
         seek.value = -1
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
@@ -227,7 +244,9 @@ final class AudioController: ObservableObject {
                 if target >= 0 { pos = min(target, b.frames - 1) }
             }
             while done < total {
-                let n = min(total - done, chunk)
+                // never across the loop point, so the Clip Clock's song position runs straight
+                let n = min(total - done, chunk, b.frames - pos)
+                dsp.songTime = Double(pos) / b.sampleRate
                 for i in 0..<n {
                     sL[i] = b.left[pos]; sR[i] = b.right[pos]
                     pos += 1
