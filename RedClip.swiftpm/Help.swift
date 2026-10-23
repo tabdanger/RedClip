@@ -10,8 +10,8 @@ import SwiftUI
 enum HelpTopic: String, CaseIterable {
     case help, presets, ab, undo, power
     case inputMeter, outputMeter, screen, clipReadout
-    case input, drive, ceiling, mix, mixer, output
-    case red, redStyle, unity, fire, boxTone, delta
+    case input, drive, ceiling, wet, dry, mixLink, output
+    case red, redStyle, unity, fire, broil, boxTone, delta
     case clipMode, link, oversampling, bypass
     case play, load, samples, demo, export
     case clipClock
@@ -31,13 +31,15 @@ enum HelpTopic: String, CaseIterable {
         case .input: return "Input"
         case .drive: return "Drive"
         case .ceiling: return "Ceiling"
-        case .mix: return "Mix"
-        case .mixer: return "Parallel Mixer"
+        case .wet: return "Wet"
+        case .dry: return "Dry"
+        case .mixLink: return "Linked / Unlinked"
         case .output: return "Output"
         case .red: return "Red"
         case .redStyle: return "Red Style"
         case .unity: return "Unity Gain"
         case .fire: return "Fire"
+        case .broil: return "Broil"
         case .boxTone: return "Box Tone"
         case .delta: return "Delta"
         case .clipMode: return "Clip Mode"
@@ -79,10 +81,12 @@ enum HelpTopic: String, CaseIterable {
             return "Pushes the signal harder into Red and the clipper without changing the input meter. More Drive means more clipping."
         case .ceiling:
             return "The level where clipping starts, from 0 down to -12 dB. The clipped signal never goes above it."
-        case .mix:
-            return "Blends the processed sound with the dry signal. 100% is fully processed, lower brings back some of the original. With the mixer unlinked, this knob sets the Wet level."
-        case .mixer:
-            return "Tap the Mix value to open the parallel mixer. Unlink it and Dry and Wet become two separate levels: keep 100% dry and blend in heavily clipped wet for bottom-up distortion, or clip gently and bring the peaks back with the dry. Both stay perfectly in time, so blending never sounds phasey."
+        case .wet:
+            return "How much of the clipped, processed signal you hear. LINKED, it crossfades with Dry: more Wet means less Dry. UNLINKED, it is a level of its own."
+        case .dry:
+            return "How much of the original, unclipped signal you hear alongside the processed one. It stays perfectly in time with Wet, so blending never sounds phasey."
+        case .mixLink:
+            return "LINKED: Wet and Dry move together as one crossfade, always adding up to 100%. UNLINKED: set them separately, e.g. 100% Dry under a heavily driven Wet for bottom-up distortion, or clip gently and bring the peaks back with Dry."
         case .output:
             return "The final level after everything else. With LINK on, it moves the opposite way to Input."
         case .red:
@@ -93,6 +97,8 @@ enum HelpTopic: String, CaseIterable {
             return "Takes the gain Red adds back off after all other processing. If Red adds 6 dB, the peaks come down 6 dB while the track keeps its perceived loudness, so you gain headroom without touching your transients."
         case .fire:
             return "Smooths the bright, edgy top end that clipping can leave. It dips the highs by up to about 1 dB, only when the signal is close to the ceiling."
+        case .broil:
+            return "Instant compression with no attack or release, like the squeeze of tape saturation but without changing the tone. The body of the sound gets denser and louder while peaks and transients at the ceiling stay exactly where they are."
         case .boxTone:
             return "A subtle converter-style tone above 1 kHz. Flat leaves it alone, Modern trims a little air, Classic is slightly darker."
         case .delta:

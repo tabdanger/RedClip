@@ -60,22 +60,25 @@ struct PlateLayout {
     let clipNumber: CGPoint           // centre of the number, in picture pixels
     let clipFont: CGFloat
 
-    let knobs: [Knob]
-    let segments: [Segments]
-    let unity, link, delta: Toggle
+    var knobs: [Knob]
+    var segments: [Segments]
+    var unity: Toggle
+    let link, delta: Toggle
     let bypass: Toggle
     let transport: Transport
     let bubbleScale: CGFloat          // help bubbles sized for this face
 
-    /// The iPhone has one face for both finishes; the iPad's red and platinum pictures were drawn
-    /// separately, so each has its own measured positions (a few pixels apart).
+    /// Red and platinum pictures were drawn separately, so each has its own measured positions
+    /// (on the iPhone the Wet / Dry / Output and Red / Fire / Broil rows are laid out differently).
     static func current(_ faceplate: Faceplate) -> PlateLayout {
-        if UIDevice.current.userInterfaceIdiom == .phone { return .phone }
-        return faceplate == .face1Platinum ? .padPlatinum : .pad
+        let platinum = faceplate == .face1Platinum
+        if UIDevice.current.userInterfaceIdiom == .phone { return platinum ? .phonePlatinum : .phone }
+        return platinum ? .padPlatinum : .pad
     }
 
     // MARK: iPad (1448 x 1086, full screen, transport built into the picture)
     // Measured from Tyrone's full-screen iPad art (Design/RedClip-faceplate*.png).
+    // The Wet / Dry and Fire / Broil areas come from the Dry/Wet + Broil art (Design/make_drywet_plates.py).
 
     static let pad = PlateLayout(
         plate: "RCPlate", segLit: "RCSegLit", segOff: "RCSegOff", abLit: "RCABLit", abOff: "RCABOff",
@@ -103,17 +106,22 @@ struct PlateLayout {
                  value: CGRect(x: 381, y: 684, width: 140, height: 30), valueFont: 22, topic: .drive),
             Knob(param: .ceilingDB, center: CGPoint(x: 722.5, y: 588), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
                  value: CGRect(x: 652.5, y: 684, width: 140, height: 30), valueFont: 22, topic: .ceiling),
-            Knob(param: .mix, center: CGPoint(x: 996, y: 587.5), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
-                 value: CGRect(x: 926, y: 684, width: 140, height: 30), valueFont: 22, topic: .mix),
+            Knob(param: .wet, center: CGPoint(x: 940.3, y: 581.6), pointerFrom: 21, pointerTo: 35, pointerWidth: 5,
+                 value: CGRect(x: 880.3, y: 640, width: 120, height: 26), valueFont: 20, topic: .wet),
+            Knob(param: .dry, center: CGPoint(x: 1070.9, y: 583.5), pointerFrom: 21, pointerTo: 35, pointerWidth: 5,
+                 value: CGRect(x: 1010.9, y: 640, width: 120, height: 26), valueFont: 20, topic: .dry),
             Knob(param: .outputDB, center: CGPoint(x: 1266.5, y: 588), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
                  value: CGRect(x: 1196.5, y: 684, width: 140, height: 30), valueFont: 22, topic: .output),
             Knob(param: .gold, center: CGPoint(x: 172.5, y: 802), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
                  value: CGRect(x: 134.5, y: 851, width: 76, height: 24), valueFont: 16, topic: .red),
-            Knob(param: .alchemy, center: CGPoint(x: 675.5, y: 802.5), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
-                 value: CGRect(x: 637.5, y: 851, width: 76, height: 24), valueFont: 16, topic: .fire)
+            Knob(param: .alchemy, center: CGPoint(x: 616.9, y: 804.3), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 578.9, y: 852, width: 76, height: 24), valueFont: 16, topic: .fire),
+            Knob(param: .broil, center: CGPoint(x: 740.6, y: 805.4), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 700.6, y: 852, width: 76, height: 24), valueFont: 16, topic: .broil)
         ],
         segments: [
             Segments(param: .goldMode, cells: [("MODERN", 258, 369), ("CLASSIC", 369, 482)], y: 762, h: 36, font: 15, topic: .redStyle),
+            Segments(param: .mixUnlink, cells: [("LINKED", 881, 1000), ("UNLINKED", 1000, 1134)], y: 677, h: 34, font: 15, topic: .mixLink),
             Segments(param: .boxTone, cells: [("FLAT", 826, 923), ("MODERN", 923, 1029), ("CLASSIC", 1029, 1138)], y: 799, h: 39, font: 15, topic: .boxTone),
             Segments(param: .clipMode, cells: [("HARD", 93, 217), ("CLASSIC", 217, 347), ("MODERN", 347, 475)], y: 926, h: 44, font: 17, topic: .clipMode),
             Segments(param: .oversampling, cells: [("1X", 768, 885), ("2X", 885, 995), ("4X", 995, 1116)], y: 927, h: 43, font: 17, topic: .oversampling)
@@ -167,18 +175,23 @@ struct PlateLayout {
                  value: CGRect(x: 381, y: 682, width: 140, height: 30), valueFont: 22, topic: .drive),
             Knob(param: .ceilingDB, center: CGPoint(x: 721.5, y: 586), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
                  value: CGRect(x: 651.5, y: 682, width: 140, height: 30), valueFont: 22, topic: .ceiling),
-            Knob(param: .mix, center: CGPoint(x: 994, y: 585.5), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
-                 value: CGRect(x: 921, y: 682, width: 140, height: 30), valueFont: 22, topic: .mix),
+            Knob(param: .wet, center: CGPoint(x: 909.3, y: 573.4), pointerFrom: 21, pointerTo: 35, pointerWidth: 5,
+                 value: CGRect(x: 850.3, y: 628, width: 120, height: 26), valueFont: 20, topic: .wet),
+            Knob(param: .dry, center: CGPoint(x: 1045.5, y: 572.1), pointerFrom: 21, pointerTo: 35, pointerWidth: 5,
+                 value: CGRect(x: 987.5, y: 628, width: 120, height: 26), valueFont: 20, topic: .dry),
             Knob(param: .outputDB, center: CGPoint(x: 1264, y: 586), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
                  value: CGRect(x: 1191, y: 683, width: 140, height: 30), valueFont: 22, topic: .output),
             Knob(param: .gold, center: CGPoint(x: 172.5, y: 802), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
                  value: CGRect(x: 134.5, y: 853, width: 76, height: 24), valueFont: 16, topic: .red),
-            Knob(param: .alchemy, center: CGPoint(x: 675.5, y: 802.5), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
-                 value: CGRect(x: 637.5, y: 853, width: 76, height: 24), valueFont: 16, topic: .fire)
+            Knob(param: .alchemy, center: CGPoint(x: 623.5, y: 805.2), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 586.5, y: 854, width: 76, height: 24), valueFont: 16, topic: .fire),
+            Knob(param: .broil, center: CGPoint(x: 744.9, y: 803.5), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 707.9, y: 854, width: 76, height: 24), valueFont: 16, topic: .broil)
         ],
         segments: [
             Segments(param: .goldMode, cells: [("MODERN", 259, 370), ("CLASSIC", 370, 483)], y: 762, h: 36, font: 15, topic: .redStyle),
-            Segments(param: .boxTone, cells: [("FLAT", 824, 921), ("MODERN", 921, 1027), ("CLASSIC", 1027, 1136)], y: 799, h: 39, font: 15, topic: .boxTone),
+            Segments(param: .mixUnlink, cells: [("LINKED", 857, 978), ("UNLINKED", 978, 1114)], y: 660, h: 40, font: 16, topic: .mixLink),
+            Segments(param: .boxTone, cells: [("FLAT", 838, 927), ("MODERN", 927, 1028), ("CLASSIC", 1028, 1137)], y: 800, h: 42, font: 15, topic: .boxTone),
             Segments(param: .clipMode, cells: [("HARD", 94, 218), ("CLASSIC", 218, 348), ("MODERN", 348, 476)], y: 929, h: 44, font: 17, topic: .clipMode),
             Segments(param: .oversampling, cells: [("1X", 767, 884), ("2X", 884, 994), ("4X", 994, 1115)], y: 930, h: 43, font: 17, topic: .oversampling)
         ],
@@ -197,7 +210,7 @@ struct PlateLayout {
 
 
     // MARK: iPhone (851 x 1848, portrait, transport built into the picture)
-    // Measured from the approved iPhone Face1 art (Red and Platinum share every position).
+    // Measured from the approved iPhone Face1 art; the Dry/Wet + Broil rows from Design/make_drywet_plates.py.
 
     static let phoneSlots: [(CGFloat, CGFloat)] = [(364, 369), (374, 380), (385, 390), (394, 399), (404, 409), (413, 418),
         (423, 428), (432, 439), (443, 449), (454, 459), (465, 470), (475, 481), (486, 491), (497, 502),
@@ -230,17 +243,22 @@ struct PlateLayout {
                  value: CGRect(x: 344.5, y: 900, width: 160, height: 32), valueFont: 22, topic: .drive),
             Knob(param: .ceilingDB, center: CGPoint(x: 670.7, y: 811.7), pointerFrom: 36, pointerTo: 56, pointerWidth: 6,
                  value: CGRect(x: 591, y: 900, width: 160, height: 32), valueFont: 22, topic: .ceiling),
-            Knob(param: .mix, center: CGPoint(x: 303.5, y: 1044), pointerFrom: 36, pointerTo: 56, pointerWidth: 6,
-                 value: CGRect(x: 223, y: 1133, width: 160, height: 32), valueFont: 22, topic: .mix),
-            Knob(param: .outputDB, center: CGPoint(x: 549.5, y: 1045.5), pointerFrom: 36, pointerTo: 56, pointerWidth: 6,
-                 value: CGRect(x: 469.5, y: 1133, width: 160, height: 32), valueFont: 22, topic: .output),
-            Knob(param: .gold, center: CGPoint(x: 182.2, y: 1262), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
-                 value: CGRect(x: 142.5, y: 1306, width: 80, height: 27), valueFont: 17, topic: .red),
-            Knob(param: .alchemy, center: CGPoint(x: 667.2, y: 1262), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
-                 value: CGRect(x: 627.5, y: 1306, width: 80, height: 27), valueFont: 17, topic: .fire)
+            Knob(param: .wet, center: CGPoint(x: 201.3, y: 1033.4), pointerFrom: 24, pointerTo: 41, pointerWidth: 5,
+                 value: CGRect(x: 141.3, y: 1091, width: 120, height: 28), valueFont: 21, topic: .wet),
+            Knob(param: .dry, center: CGPoint(x: 356, y: 1031.2), pointerFrom: 24, pointerTo: 41, pointerWidth: 5,
+                 value: CGRect(x: 296, y: 1091, width: 120, height: 28), valueFont: 21, topic: .dry),
+            Knob(param: .outputDB, center: CGPoint(x: 548.5, y: 1047.3), pointerFrom: 36, pointerTo: 56, pointerWidth: 6,
+                 value: CGRect(x: 468.5, y: 1132, width: 160, height: 32), valueFont: 22, topic: .output),
+            Knob(param: .gold, center: CGPoint(x: 185, y: 1259.9), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
+                 value: CGRect(x: 145, y: 1306, width: 80, height: 27), valueFont: 17, topic: .red),
+            Knob(param: .alchemy, center: CGPoint(x: 590.4, y: 1261.1), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
+                 value: CGRect(x: 550.4, y: 1306, width: 80, height: 27), valueFont: 17, topic: .fire),
+            Knob(param: .broil, center: CGPoint(x: 737.3, y: 1262.8), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
+                 value: CGRect(x: 697.3, y: 1306, width: 80, height: 27), valueFont: 17, topic: .broil)
         ],
         segments: [
             Segments(param: .goldMode, cells: [("MODERN", 277, 392), ("CLASSIC", 392, 508)], y: 1214, h: 40, font: 16, topic: .redStyle),
+            Segments(param: .mixUnlink, cells: [("LINKED", 133, 276), ("UNLINKED", 284, 422)], y: 1123, h: 41, font: 16, topic: .mixLink),
             Segments(param: .boxTone, cells: [("FLAT", 104, 228), ("MODERN", 228, 350), ("CLASSIC", 350, 472)], y: 1386, h: 47, font: 17, topic: .boxTone),
             Segments(param: .clipMode, cells: [("HARD", 143, 330), ("CLASSIC", 330, 519), ("MODERN", 519, 709)], y: 1488, h: 44, font: 17, topic: .clipMode),
             Segments(param: .oversampling, cells: [("1X", 272, 376), ("2X", 376, 475), ("4X", 475, 578)], y: 1579, h: 43, font: 17, topic: .oversampling)
@@ -257,4 +275,36 @@ struct PlateLayout {
                              progress: CGRect(x: 276, y: 1720, width: 282, height: 30),
                              export: CGRect(x: 601, y: 1711, width: 151, height: 53), font: 18),
         bubbleScale: 1.9)
+
+    /// The platinum iPhone face: everything sits where the red one has it except the Wet / Dry /
+    /// Output and Red / Fire / Broil rows.
+    static let phonePlatinum: PlateLayout = {
+        var l = PlateLayout.phone
+        l.knobs = l.knobs.filter { [Param.inputDB, .driveDB, .ceilingDB].contains($0.param) } + [
+            Knob(param: .wet, center: CGPoint(x: 227.6, y: 1032.9), pointerFrom: 24, pointerTo: 41, pointerWidth: 5,
+                 value: CGRect(x: 167.6, y: 1096, width: 120, height: 28), valueFont: 21, topic: .wet),
+            Knob(param: .dry, center: CGPoint(x: 419.6, y: 1032.4), pointerFrom: 24, pointerTo: 41, pointerWidth: 5,
+                 value: CGRect(x: 359.6, y: 1096, width: 120, height: 28), valueFont: 21, topic: .dry),
+            Knob(param: .outputDB, center: CGPoint(x: 622.3, y: 1049.9), pointerFrom: 34, pointerTo: 53, pointerWidth: 6,
+                 value: CGRect(x: 542.3, y: 1133, width: 160, height: 32), valueFont: 22, topic: .output),
+            Knob(param: .gold, center: CGPoint(x: 142.1, y: 1259.2), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
+                 value: CGRect(x: 102.1, y: 1306, width: 80, height: 27), valueFont: 17, topic: .red),
+            Knob(param: .alchemy, center: CGPoint(x: 590.8, y: 1263.4), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
+                 value: CGRect(x: 550.8, y: 1306, width: 80, height: 27), valueFont: 17, topic: .fire),
+            Knob(param: .broil, center: CGPoint(x: 744, y: 1262.7), pointerFrom: 16, pointerTo: 28, pointerWidth: 4,
+                 value: CGRect(x: 704, y: 1306, width: 80, height: 27), valueFont: 17, topic: .broil)
+        ]
+        l.segments = l.segments.map { s in
+            switch s.param {
+            case .goldMode:
+                return Segments(param: .goldMode, cells: [("MODERN", 237, 354), ("CLASSIC", 354, 470)], y: 1214, h: 41, font: 16, topic: .redStyle)
+            case .mixUnlink:
+                return Segments(param: .mixUnlink, cells: [("LINKED", 163, 319), ("UNLINKED", 342, 500)], y: 1129, h: 40, font: 16, topic: .mixLink)
+            default:
+                return s
+            }
+        }
+        l.unity = Toggle(rect: CGRect(x: 269, y: 1274, width: 170, height: 44), font: 17)
+        return l
+    }()
 }
