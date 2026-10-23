@@ -14,6 +14,7 @@ enum HelpTopic: String, CaseIterable {
     case red, redStyle, unity, fire, boxTone, delta
     case clipMode, link, oversampling, bypass
     case play, load, samples, demo, export
+    case clipClock
 
     var title: String {
         switch self {
@@ -47,6 +48,7 @@ enum HelpTopic: String, CaseIterable {
         case .samples: return "Samples"
         case .demo: return "Demo"
         case .export: return "Export"
+        case .clipClock: return "Clip Clock"
         }
     }
 
@@ -110,6 +112,8 @@ enum HelpTopic: String, CaseIterable {
             return "Loads the built-in drum loop so you can try Red Clip straight away."
         case .export:
             return "Renders the whole file through your current settings to a 24-bit WAV you can save or share."
+        case .clipClock:
+            return "Finds the spot in the song where Red Clip clips hardest. MAX CLIP is the most the signal has gone past the ceiling, MIN:SEC is when it happened. Play the record through, go to that spot and set Drive, Red and Fire so the loudest moment still clips cleanly. The arrow starts a new pass."
         }
     }
 }

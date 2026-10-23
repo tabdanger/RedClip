@@ -179,6 +179,7 @@ final class AudioController: ObservableObject {
         let ph = playhead, flag = playFlag, seek = seekRequest, sL = scratchL, sR = scratchR, chunk = AudioController.chunk
         ph.value = 0          // the engine is stopped here, so nothing renders while these reset
         clearScope()
+        shared.clipClock.requestReset()                // a new song starts a new Clip Clock pass
         seek.value = -1
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
@@ -227,7 +228,9 @@ final class AudioController: ObservableObject {
                 if target >= 0 { pos = min(target, b.frames - 1) }
             }
             while done < total {
-                let n = min(total - done, chunk)
+                // never across the loop point, so the Clip Clock's song position runs straight
+                let n = min(total - done, chunk, b.frames - pos)
+                dsp.songTime = Double(pos) / b.sampleRate
                 for i in 0..<n {
                     sL[i] = b.left[pos]; sR[i] = b.right[pos]
                     pos += 1

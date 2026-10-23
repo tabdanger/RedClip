@@ -3,9 +3,11 @@ New in this build:
 - Pause freezes the screen, power off clears it, silence is a flat line.
 - Logic automation is now sample-accurate, and automation ramps play out over their full length.
 - Red Clip runs on iPhone as well as iPad, with matching red and Platinum faceplates.
+- Clip Clock (bottom left of the screen): MAX CLIP holds the most the signal went past the ceiling, MIN:SEC shows where in the song it happened. The arrow resets it. In Logic it follows the song position.
 
 Please try:
 - Play the demo or your own file and move each knob while watching the screen.
 - Hard, Classic and Modern clip modes with Drive up: Hard should show flat tops, the others rounded ones.
 - In Logic on iPad, draw automation curves on Ceiling or Output and listen for clicks.
 - The same things on iPhone.
+- Play a whole song, check the Clip Clock time, jump there and confirm it's the loudest hit. Then reset, change Drive and play again.

@@ -154,6 +154,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(kAudioUnitErr_FailedInitialization))
         }
         render.prepare(format: inBus.format, frames: maximumFramesToRender, shared: shared)
+        render.transport = transportStateBlock            // the host's song position, for the Clip Clock
         shared.scopeClearedAt.value = shared.ringTotal.acquire()     // a fresh start shows a flat line
     }
 
@@ -207,6 +208,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
             //    while the host ramps a control, it's cut every rampStep frames and the value
             //    follows the ramp. Ramps that don't finish here carry on in the next block.
             let start = timestamp.pointee.mSampleTime
+            let song = passThrough ? -1 : state.songPosition(frames: frames, sampleRate: dsp.sampleRate)
             var event = events
             var done = 0
             while done < frames {
@@ -223,6 +225,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
                     if outL != inL { (outL + done).update(from: inL + done, count: n) }
                     if stereo && outR != inR { (outR + done).update(from: inR + done, count: n) }
                 } else {
+                    dsp.songTime = song < 0 ? -1 : song + Double(done) / dsp.sampleRate
                     dsp.process(inL: srcL + done, inR: srcR + done, outL: outL + done, outR: outR + done,
                                 frames: n, gliding: gliding)
                 }
@@ -292,6 +295,10 @@ final class RedClipRenderState: @unchecked Sendable {
     private var inputBuffer: AVAudioPCMBuffer?
     private let inputPointers = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: 2)
     private var inputPointerCount = 0
+    /// The host's transport (set before rendering starts) and, for hosts without one, how long
+    /// Red Clip has been processing. Both only feed the Clip Clock's song position.
+    var transport: AUHostTransportStateBlock?
+    private var elapsed: Double = 0
 
     /// While a ramp runs, the block is processed in pieces this long; the DSP moves the control
     /// in a straight line across each piece, so the ramp is followed sample by sample.
@@ -400,6 +407,20 @@ final class RedClipRenderState: @unchecked Sendable {
         }
     }
 
+    /// Clip Clock (audio thread): the song position of this block's first sample, in seconds, or
+    /// -1 while the host's transport is stopped (nothing there to point at).
+    func songPosition(frames: Int, sampleRate: Double) -> Double {
+        defer { elapsed += Double(frames) }
+        if let transport {
+            var flags = AUHostTransportStateFlags(rawValue: 0)
+            var position: Double = 0
+            if transport(&flags, &position, nil, nil) {
+                return flags.contains(.moving) ? position / sampleRate : -1
+            }
+        }
+        return elapsed / sampleRate
+    }
+
     /// Off the audio thread (render resources being reset): forget ramps in progress.
     func clearRamps() {
         rampMask = 0
@@ -410,6 +431,7 @@ final class RedClipRenderState: @unchecked Sendable {
         let count = Int(max(frames, 4_096))
         maxFrames = count
         dsp = ClipDSP(sampleRate: format.sampleRate, shared: shared)
+        elapsed = 0
         clearRamps()
         spareR.deallocate()
         spareR = .allocate(capacity: count)

@@ -61,6 +61,7 @@ final class SharedState: @unchecked Sendable {
     let waveRate: AtomicFloat    // columns per second
     let power: AtomicInt         // 0 = power button off (plug-in passes audio through untouched)
     let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
+    let clipClock = ClipClockState()   // biggest clip and where in the song it happened (ClipClock.swift)
 
     // Sample rings for the screen (oscilloscope) and the LED meters. The audio thread writes one
     // value per sample into each; the UI copies the newest stretch at display rate.
@@ -381,6 +382,11 @@ final class ClipDSP: @unchecked Sendable {
     private var goldT: Float = 1, goldL: Float = 1, goldMakeup: Float = 1
     private var clipOver: Float = 1   // largest (signal into clipper / ceiling) this block
 
+    /// Clip Clock: song position (seconds) of this block's first sample, set by whoever calls
+    /// process() (the app's playhead, the host's transport). Negative: not playing, don't record.
+    var songTime: Double = -1
+    private var clockBest: Float = 1  // biggest clipOver since the last Clip Clock reset
+
     // loudness: 100 ms blocks, K-weighted, double-precision sums
     private let lufsBlock: Int
     private var lufsCount = 0
@@ -493,6 +499,14 @@ final class ClipDSP: @unchecked Sendable {
             loudIn.reset(); loudOut.reset()
         }
 
+        let clock = shared.clipClock
+        if clock.reset.value != 0, clock.reset.exchange(0) != 0 {
+            clockBest = 1
+            clock.maxDB.value = 0
+            clock.seconds.value = -1
+        }
+        var clockOver: Float = 1, clockAt = 0         // this block's biggest clip and its sample
+
         var inPeak: (Float, Float) = (0, 0), outPeak: (Float, Float) = (0, 0)
         clipOver = 1
         // per control: ramping -> fixed step per sample to the target; otherwise -> 0 (smoother)
@@ -582,6 +596,8 @@ final class ClipDSP: @unchecked Sendable {
                 let ko = s.kOut2.process(s.kOut1.process(out)); kOut += ko * ko
             }
 
+            if clipOver > clockOver { clockOver = clipOver; clockAt = n }
+
             // screen + meter rings. The output comes out of the oversampling filters late (the
             // up-sampling filter and the down-sampling filter each delay it about 2 samples at
             // 2x, 2.3 at 4x), so the original input is stored that many slots ahead, and the
@@ -640,6 +656,13 @@ final class ClipDSP: @unchecked Sendable {
         m.storeMax(Meter.outPeakR.rawValue, outPeak.1)
         if clipOver > 1 { m[Meter.clip.rawValue] = 1 }
         m.storeMax(Meter.reductionDB.rawValue, gainToDB(clipOver))
+
+        // Clip Clock: a new biggest clip while the song is playing; publish it and where it was
+        if songTime >= 0 && clockOver > clockBest {
+            clockBest = clockOver
+            clock.seconds.value = Float(songTime + Double(clockAt) / sampleRate)
+            clock.maxDB.value = gainToDB(clockOver)
+        }
     }
 
     /// Gold (Lavry-style soft saturation + make-up) -> clipper -> Alchemy, at the oversampled rate.
