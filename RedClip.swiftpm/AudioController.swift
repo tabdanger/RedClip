@@ -100,13 +100,29 @@ final class AudioController: ObservableObject {
     func play() {
         if !isPowered { face.setPowered(true) }
         if !engine.isRunning { try? engine.start() }
-        playFlag.value = 1
+        if !scrubbing { playFlag.value = 1 }
         isPlaying = true
     }
 
     func stop() {
         playFlag.value = 0
         isPlaying = false
+    }
+
+    /// Dragging the playhead: the audio goes quiet while the finger moves and carries on from
+    /// wherever it lands, so scrubbing never plays a burst of sound (or feeds the Clip Clock).
+    private var scrubbing = false
+
+    func beginScrub() {
+        guard !scrubbing else { return }
+        scrubbing = true
+        playFlag.value = 0
+    }
+
+    func endScrub() {
+        guard scrubbing else { return }
+        scrubbing = false
+        if isPlaying { playFlag.value = 1 }
     }
 
     func seek(to fraction: Double) {
