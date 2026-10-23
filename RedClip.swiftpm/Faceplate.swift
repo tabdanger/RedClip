@@ -126,17 +126,37 @@ struct FaceplateView: View {
 
     private var displays: some View {
         ZStack(alignment: .topLeading) {
+            zoomTarget(L.meterIn)
+            zoomTarget(L.meterOut)
             PlateMeters(shared: face.shared, state: face.meters.stereo, isInput: true, geometry: L.meterIn)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { face.stepMeterZoom() }
                 .helpTarget(.inputMeter, face).place(L.meterIn.frame)
             PlateMeters(shared: face.shared, state: face.meters.stereo, isInput: false, geometry: L.meterOut)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { face.stepMeterZoom() }
                 .helpTarget(.outputMeter, face).place(L.meterOut.frame)
-            PlateScreen(shared: face.shared, scope: face.meters.scope, ceilingDB: params[.ceilingDB], isPlugin: face.isPlugin)
+            PlateScreen(shared: face.shared, scope: face.meters.scope, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
+                        isPlugin: face.isPlugin)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { face.stepMeterZoom() }
                 .helpTarget(.screen, face).place(L.screen)
             PlateClipNumber(reader: face.meters, center: CGPoint(x: L.clipNumber.x - L.clip.minX, y: L.clipNumber.y - L.clip.minY),
                             fontSize: L.clipFont)
                 .helpTarget(.clipReadout, face).place(L.clip)
             clipClock
         }
+    }
+
+    /// The meter and the scale printed beside it: double-tapping either steps the screen's zoom,
+    /// like double-clicking Gold Clip's scale. Sits under the meter, which takes its own taps.
+    private func zoomTarget(_ m: PlateLayout.Meter) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { face.stepMeterZoom() }
+            .accessibilityLabel("Zoom the screen, \(face.meterZoom.label)")
+            .accessibilityAddTraits(.isButton)
+            .place(x: m.frame.minX, y: m.frame.minY, w: m.frame.width * 1.6, h: m.frame.height)
     }
 
     /// The Clip Clock panel in the bottom-left corner of the screen's glass (screen units, 258 high).
@@ -558,8 +578,10 @@ struct PlateMeters: View {
 
 /// The live scope on the picture's glass, read straight from the audio the engine (or the
 /// host) is processing; nothing here is simulated from knob positions.
-///   - grey: the original input; red: the final output (after Mix, Output and Bypass), both
-///     over the same ~120 ms, lined up in time and on one fixed linear scale (+/-1.5);
+///   - grey: the signal going into the clipper (after Input, Drive and Red), so pushing Input
+///     raises it toward the ceiling; red: the final output (after Mix, Output and Bypass), both
+///     over the same ~120 ms, lined up in time, on the dB scale of the current zoom tier
+///     (MeterZoom: +6 to -36 dBFS by default, mirrored around the centre line);
 ///   - each display column shows the min..max of its samples, so transients survive;
 ///   - where the clipper took peaks off, the removed part is shaded and the +/- ceiling guide
 ///     lights up over it. The guides follow the Ceiling control and mark the clip stage: Mix
@@ -571,13 +593,15 @@ struct PlateScreen: View {
     let shared: SharedState
     let scope: ScopeReader
     let ceilingDB: Float
+    var zoom: MeterZoom = .full
     var isPlugin = false
     @Environment(\.scenePhase) private var phase
     @State private var visible = false
 
     // Drawn in the scope's own space: 258 high, and as wide as the glass's shape needs
     // (910 on the iPad face, about 420 on the iPhone face), then scaled onto the glass.
-    static let H: CGFloat = 258, left: CGFloat = 57, cy: CGFloat = 133, scale: CGFloat = 56
+    // `half`: from the centre line to the top of the zoom range
+    static let H: CGFloat = 258, left: CGFloat = 57, cy: CGFloat = 133, half: CGFloat = 88
     static let fps = 30.0
 
     /// In the app, inactive or background pauses it; a plug-in window follows its own visibility.
@@ -597,21 +621,25 @@ struct PlateScreen: View {
     }
 
     private func draw(_ c: GraphicsContext, W: CGFloat, frame: Date) {
-        let L = Self.left, R = W - 19, cy = Self.cy, k = Self.scale
+        let L = Self.left, R = W - 19, cy = Self.cy, k = Self.half
         c.fill(Path(CGRect(x: 0, y: 0, width: W, height: 258)), with: .color(Color(hex: 0x0b0c0e)))
         c.fill(Path(CGRect(x: 0, y: 0, width: W, height: 258)),
                with: .radialGradient(Gradient(colors: [Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0.07),
                                                        Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0)]),
                                      center: CGPoint(x: 90, y: 25), startRadius: 1, endRadius: 260))
-        // amplitude grid + labels
-        for step in 0...6 {
-            let v = -1.5 + Double(step) * 0.5
-            let y = cy - CGFloat(v) * k
+        // dB grid + labels: the zoom's marks above and mirrored below, its floor on the centre line
+        func gridLine(_ y: CGFloat, _ label: String, bright: Bool) {
             var p = Path(); p.move(to: CGPoint(x: L, y: y)); p.addLine(to: CGPoint(x: R, y: y))
-            c.stroke(p, with: .color(v == 0 ? Color(hex: 0x292a2c) : Color(hex: 0x191a1c)), lineWidth: 1)
-            let label = v == 0 ? "0" : (v > 0 ? "+" : "") + String(format: "%.1f", v)
+            c.stroke(p, with: .color(bright ? Color(hex: 0x292a2c) : Color(hex: 0x191a1c)), lineWidth: 1)
             c.draw(Text(label).font(.system(size: 11)).foregroundColor(Color(hex: 0x898d93)),
                    at: CGPoint(x: 9, y: y), anchor: .leading)
+        }
+        gridLine(cy, String(format: "%.0f", zoom.floorDB), bright: false)
+        for db in zoom.marks {
+            let off = zoom.position(db) * k
+            let label = db > 0 ? String(format: "+%.0f", db) : String(format: "%.0f", db)
+            gridLine(cy - off, label, bright: db == 0)
+            gridLine(cy + off, label, bright: db == 0)
         }
         let cols = W > 600 ? 12 : 6
         for j in 0...cols {
@@ -619,8 +647,9 @@ struct PlateScreen: View {
             var p = Path(); p.move(to: CGPoint(x: x, y: 42)); p.addLine(to: CGPoint(x: x, y: 244))
             c.stroke(p, with: .color(Color(hex: 0x18191b)), lineWidth: 1)
         }
-        // +/- ceiling guides (clip-stage reference, from the Ceiling control)
-        let ceil = CGFloat(dbToGain(ceilingDB))
+        // +/- ceiling guides (clip-stage reference, from the Ceiling control): pulling the
+        // ceiling down moves them toward the waveform, and the zoom scales them with it
+        let ceil = zoom.position(ceilingDB)
         for sgn: CGFloat in [-1, 1] {
             var p = Path(); p.move(to: CGPoint(x: L, y: cy - sgn * ceil * k)); p.addLine(to: CGPoint(x: R, y: cy - sgn * ceil * k))
             c.stroke(p, with: .color(Color(hex: 0x91282b)), style: StrokeStyle(lineWidth: 1, dash: [6, 7]))
@@ -635,7 +664,7 @@ struct PlateScreen: View {
         scope.update(shared, columns: Int(R - L))
         let n = scope.columns
         let colW = (R - L) / CGFloat(n)
-        @inline(__always) func y(_ v: Float) -> CGFloat { cy - CGFloat(max(min(v, 2.2), -2.2)) * k }
+        @inline(__always) func y(_ v: Float) -> CGFloat { cy - zoom.position(sample: v) * k }
         @inline(__always) func x(_ i: Int) -> CGFloat { L + (CGFloat(i) + 0.5) * colW }
 
         /// A min..max band across the columns, at least `thick` tall so a quiet trace still shows.
@@ -666,8 +695,8 @@ struct PlateScreen: View {
         shade.closeSubpath()
         c.fill(shade, with: .color(Color(hex: 0x390f13)))
 
-        // original input (grey)
-        c.fill(band(scope.inMin, scope.inMax, thick: 2), with: .color(Color(hex: 0x89929f)))
+        // into the clipper (grey): Input and Drive push it up toward the ceiling
+        c.fill(band(scope.clipInMin, scope.clipInMax, thick: 2), with: .color(Color(hex: 0x89929f)))
 
         // what the clipper took off: shaded from its output up to its input, and the guide lit
         var cut = Path(), lit = Path()
@@ -695,7 +724,7 @@ struct PlateScreen: View {
         glow.addFilter(.shadow(color: Color(hex: 0xff4145), radius: 4))
         glow.fill(lit, with: .color(Color(hex: 0xff6a6e)))
 
-        c.draw(Text("AMPLITUDE").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: 12, y: 242), anchor: .leading)
+        c.draw(Text(zoom.label).font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: 12, y: 242), anchor: .leading)
         c.draw(Text("120 ms").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: W - 19, y: 242), anchor: .trailing)
     }
 }
