@@ -67,70 +67,134 @@ struct PlateLayout {
     let transport: Transport
     let bubbleScale: CGFloat          // help bubbles sized for this face
 
-    static var current: PlateLayout {
-        UIDevice.current.userInterfaceIdiom == .phone ? .phone : .pad
+    /// The iPhone has one face for both finishes; the iPad's red and platinum pictures were drawn
+    /// separately, so each has its own measured positions (a few pixels apart).
+    static func current(_ faceplate: Faceplate) -> PlateLayout {
+        if UIDevice.current.userInterfaceIdiom == .phone { return .phone }
+        return faceplate == .face1Platinum ? .padPlatinum : .pad
     }
 
-    // MARK: iPad (1448 x 997 plate + 89 px transport strip)
+    // MARK: iPad (1448 x 1086, full screen, transport built into the picture)
+    // Measured from Tyrone's full-screen iPad art (Design/RedClip-faceplate*.png).
 
     static let pad = PlateLayout(
         plate: "RCPlate", segLit: "RCSegLit", segOff: "RCSegOff", abLit: "RCABLit", abOff: "RCABOff",
-        size: CGSize(width: 1448, height: 997), canvas: CGSize(width: 1448, height: 1086),
-        strip: "RCStrip", pluginHeight: 997,
-        presetPrev: CGRect(x: 523, y: 25, width: 52, height: 53),
-        presetNext: CGRect(x: 871, y: 25, width: 52, height: 53),
-        presetName: CGRect(x: 578, y: 25, width: 290, height: 53), presetFont: 21,
-        a: CGRect(x: 958, y: 28, width: 57, height: 51), b: CGRect(x: 1015, y: 28, width: 57, height: 51),
-        undo: CGRect(x: 1112, y: 26, width: 62, height: 53), help: CGRect(x: 1182, y: 27, width: 62, height: 54),
-        power: CGRect(x: 1275, y: 17, width: 70, height: 70),
-        letterFont: 22, helpFont: 30, powerIcon: 30,
-        meterIn: Meter(frame: CGRect(x: 111, y: 148, width: 72, height: 251),
-                       strips: [(115, 135), (157, 176)], slots: padSlots,
-                       markY: [154, 201, 244, 285, 328, 371, 390], backTop: 152, backHeight: 242),
-        meterOut: Meter(frame: CGRect(x: 1224, y: 148, width: 75, height: 251),
-                        strips: [(1231, 1250), (1274, 1292)], slots: padSlots,
-                        markY: [154, 201, 244, 285, 328, 371, 390], backTop: 152, backHeight: 242),
-        screen: CGRect(x: 273, y: 128, width: 910, height: 258), scopeTextScale: 1,
-        clip: CGRect(x: 591, y: 402, width: 266, height: 53), clipNumber: CGPoint(x: 738, y: 428), clipFont: 38,
+        size: CGSize(width: 1448, height: 1086), canvas: CGSize(width: 1448, height: 1086),
+        strip: nil, pluginHeight: 998,
+        presetPrev: CGRect(x: 515, y: 22, width: 55, height: 53),
+        presetNext: CGRect(x: 878, y: 22, width: 55, height: 53),
+        presetName: CGRect(x: 570, y: 22, width: 308, height: 53), presetFont: 22,
+        a: CGRect(x: 970, y: 26, width: 55, height: 47), b: CGRect(x: 1027, y: 26, width: 57, height: 47),
+        undo: CGRect(x: 1133, y: 23, width: 60, height: 53), help: CGRect(x: 1207, y: 23, width: 61, height: 54),
+        power: CGRect(x: 1305, y: 13, width: 72, height: 72),
+        letterFont: 23, helpFont: 31, powerIcon: 31,
+        meterIn: Meter(frame: CGRect(x: 80, y: 147, width: 76, height: 252),
+                       strips: [(85, 105), (127, 148)], slots: padSlots,
+                       markY: [157, 200, 242, 283, 325, 367, 394], backTop: 150, backHeight: 248),
+        meterOut: Meter(frame: CGRect(x: 1252, y: 147, width: 74, height: 252),
+                        strips: [(1258, 1279), (1303, 1322)], slots: padSlots,
+                        markY: [157, 200, 242, 283, 325, 367, 394], backTop: 150, backHeight: 248),
+        screen: CGRect(x: 249, y: 125, width: 957, height: 265), scopeTextScale: 1,
+        clip: CGRect(x: 586, y: 408, width: 278, height: 51), clipNumber: CGPoint(x: 739, y: 432.5), clipFont: 40,
         knobs: [
-            Knob(param: .inputDB, center: CGPoint(x: 208.9, y: 581.5), pointerFrom: 34, pointerTo: 53, pointerWidth: 5,
-                 value: CGRect(x: 138.9, y: 676, width: 140, height: 30), valueFont: 21, topic: .input),
-            Knob(param: .driveDB, center: CGPoint(x: 465.4, y: 581.5), pointerFrom: 34, pointerTo: 53, pointerWidth: 5,
-                 value: CGRect(x: 395.4, y: 676, width: 140, height: 30), valueFont: 21, topic: .drive),
-            Knob(param: .ceilingDB, center: CGPoint(x: 723.4, y: 581.4), pointerFrom: 34, pointerTo: 53, pointerWidth: 5,
-                 value: CGRect(x: 653.4, y: 676, width: 140, height: 30), valueFont: 21, topic: .ceiling),
-            Knob(param: .mix, center: CGPoint(x: 983.1, y: 581.0), pointerFrom: 34, pointerTo: 53, pointerWidth: 5,
-                 value: CGRect(x: 913.1, y: 676, width: 140, height: 30), valueFont: 21, topic: .mix),
-            Knob(param: .outputDB, center: CGPoint(x: 1240.8, y: 581.8), pointerFrom: 34, pointerTo: 53, pointerWidth: 5,
-                 value: CGRect(x: 1170.8, y: 676, width: 140, height: 30), valueFont: 21, topic: .output),
-            Knob(param: .gold, center: CGPoint(x: 198.1, y: 795.8), pointerFrom: 17, pointerTo: 29, pointerWidth: 4,
-                 value: CGRect(x: 162.1, y: 845, width: 72, height: 24), valueFont: 15, topic: .red),
-            Knob(param: .alchemy, center: CGPoint(x: 677.6, y: 796.6), pointerFrom: 17, pointerTo: 29, pointerWidth: 4,
-                 value: CGRect(x: 641.6, y: 845, width: 72, height: 24), valueFont: 15, topic: .fire)
+            Knob(param: .inputDB, center: CGPoint(x: 180.5, y: 588), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 110.5, y: 684, width: 140, height: 30), valueFont: 22, topic: .input),
+            Knob(param: .driveDB, center: CGPoint(x: 451, y: 588), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 381, y: 684, width: 140, height: 30), valueFont: 22, topic: .drive),
+            Knob(param: .ceilingDB, center: CGPoint(x: 722.5, y: 588), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 652.5, y: 684, width: 140, height: 30), valueFont: 22, topic: .ceiling),
+            Knob(param: .mix, center: CGPoint(x: 996, y: 587.5), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 926, y: 684, width: 140, height: 30), valueFont: 22, topic: .mix),
+            Knob(param: .outputDB, center: CGPoint(x: 1266.5, y: 588), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 1196.5, y: 684, width: 140, height: 30), valueFont: 22, topic: .output),
+            Knob(param: .gold, center: CGPoint(x: 172.5, y: 802), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 134.5, y: 851, width: 76, height: 24), valueFont: 16, topic: .red),
+            Knob(param: .alchemy, center: CGPoint(x: 675.5, y: 802.5), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 637.5, y: 851, width: 76, height: 24), valueFont: 16, topic: .fire)
         ],
         segments: [
-            Segments(param: .goldMode, cells: [("MODERN", 282, 387), ("CLASSIC", 387, 490)], y: 758, h: 33, font: 14, topic: .redStyle),
-            Segments(param: .boxTone, cells: [("FLAT", 820, 912), ("MODERN", 912, 1013), ("CLASSIC", 1013, 1116)], y: 792, h: 40, font: 14, topic: .boxTone),
-            Segments(param: .clipMode, cells: [("HARD", 123, 243), ("CLASSIC", 243, 363), ("MODERN", 363, 486)], y: 922, h: 46, font: 16, topic: .clipMode),
-            Segments(param: .oversampling, cells: [("1X", 767, 877), ("2X", 877, 982), ("4X", 982, 1093)], y: 922, h: 44, font: 16, topic: .oversampling)
+            Segments(param: .goldMode, cells: [("MODERN", 258, 369), ("CLASSIC", 369, 482)], y: 762, h: 36, font: 15, topic: .redStyle),
+            Segments(param: .boxTone, cells: [("FLAT", 826, 923), ("MODERN", 923, 1029), ("CLASSIC", 1029, 1138)], y: 799, h: 39, font: 15, topic: .boxTone),
+            Segments(param: .clipMode, cells: [("HARD", 93, 217), ("CLASSIC", 217, 347), ("MODERN", 347, 475)], y: 926, h: 44, font: 17, topic: .clipMode),
+            Segments(param: .oversampling, cells: [("1X", 768, 885), ("2X", 885, 995), ("4X", 995, 1116)], y: 927, h: 43, font: 17, topic: .oversampling)
         ],
-        unity: Toggle(rect: CGRect(x: 312, y: 808, width: 152, height: 35), font: 15),
-        link: Toggle(rect: CGRect(x: 567, y: 908, width: 123, height: 50), font: 17),
-        delta: Toggle(rect: CGRect(x: 1180, y: 794, width: 133, height: 40), font: 16),
-        bypass: Toggle(rect: CGRect(x: 1162, y: 907, width: 165, height: 51), font: 17),
-        transport: Transport(play: CGRect(x: 65, y: 1012, width: 115, height: 45),
-                             load: CGRect(x: 193, y: 1012, width: 115, height: 45),
-                             samples: CGRect(x: 323, y: 1012, width: 145, height: 45),
-                             demo: CGRect(x: 483, y: 1012, width: 107, height: 45),
-                             fileName: CGRect(x: 607, y: 1022, width: 165, height: 24),
-                             progress: CGRect(x: 790, y: 1019, width: 436, height: 30),
-                             export: CGRect(x: 1251, y: 1012, width: 131, height: 45), font: 16),
+        unity: Toggle(rect: CGRect(x: 289, y: 812, width: 163, height: 39), font: 16),
+        link: Toggle(rect: CGRect(x: 558, y: 910, width: 132, height: 52), font: 18),
+        delta: Toggle(rect: CGRect(x: 1203, y: 799, width: 143, height: 41), font: 17),
+        bypass: Toggle(rect: CGRect(x: 1184, y: 910, width: 174, height: 53), font: 18),
+        transport: Transport(play: CGRect(x: 31, y: 1013, width: 121, height: 47),
+                             load: CGRect(x: 166, y: 1013, width: 123, height: 47),
+                             samples: CGRect(x: 302, y: 1013, width: 152, height: 47),
+                             demo: CGRect(x: 468, y: 1013, width: 114, height: 47),
+                             fileName: CGRect(x: 601, y: 1025, width: 180, height: 26),
+                             progress: CGRect(x: 795, y: 1022, width: 457, height: 30),
+                             export: CGRect(x: 1280, y: 1014, width: 137, height: 46), font: 18),
         bubbleScale: 1)
 
-    static let padSlots: [(CGFloat, CGFloat)] = [(154, 160), (166, 169), (175, 179), (183, 188), (193, 197), (202, 208),
-        (210, 216), (220, 226), (229, 236), (240, 245), (250, 256), (260, 266), (270, 276), (281, 286),
-        (291, 297), (301, 307), (312, 317), (322, 327), (332, 338), (342, 348), (353, 359), (362, 369),
-        (373, 379), (383, 390)]
+    static let padSlots: [(CGFloat, CGFloat)] = [(153, 159), (165, 169), (174, 178), (182, 188), (192, 197), (202, 208),
+        (210, 216), (220, 227), (230, 237), (241, 246), (251, 257), (261, 268),
+        (271, 278), (283, 288), (293, 299), (303, 309), (314, 320), (324, 330),
+        (335, 341), (345, 351), (356, 362), (366, 372), (376, 383), (387, 394)]
+
+    static let padPlatinumSlots: [(CGFloat, CGFloat)] = [(152, 158), (163, 168), (172, 178), (181, 187), (191, 196), (200, 206),
+        (209, 215), (219, 225), (228, 235), (239, 245), (249, 255), (259, 265),
+        (269, 276), (280, 287), (291, 297), (301, 307), (312, 318), (322, 328),
+        (332, 339), (343, 349), (354, 360), (363, 370), (374, 381), (385, 392)]
+
+    static let padPlatinum = PlateLayout(
+        plate: "RCPlate", segLit: "RCSegLit", segOff: "RCSegOff", abLit: "RCABLit", abOff: "RCABOff",
+        size: CGSize(width: 1448, height: 1086), canvas: CGSize(width: 1448, height: 1086),
+        strip: nil, pluginHeight: 1005,
+        presetPrev: CGRect(x: 515, y: 23, width: 55, height: 53),
+        presetNext: CGRect(x: 878, y: 23, width: 55, height: 53),
+        presetName: CGRect(x: 570, y: 23, width: 308, height: 53), presetFont: 22,
+        a: CGRect(x: 970, y: 27, width: 55, height: 47), b: CGRect(x: 1027, y: 27, width: 57, height: 47),
+        undo: CGRect(x: 1133, y: 24, width: 60, height: 53), help: CGRect(x: 1206, y: 24, width: 61, height: 54),
+        power: CGRect(x: 1301, y: 15, width: 72, height: 72),
+        letterFont: 23, helpFont: 31, powerIcon: 31,
+        meterIn: Meter(frame: CGRect(x: 80, y: 145, width: 76, height: 252),
+                       strips: [(86, 106), (129, 149)], slots: padPlatinumSlots,
+                       markY: [155, 198, 240, 281, 323, 365, 392], backTop: 149, backHeight: 247),
+        meterOut: Meter(frame: CGRect(x: 1248, y: 145, width: 74, height: 252),
+                        strips: [(1254, 1274), (1298, 1318)], slots: padPlatinumSlots,
+                        markY: [155, 198, 240, 281, 323, 365, 392], backTop: 149, backHeight: 247),
+        screen: CGRect(x: 248, y: 122, width: 957, height: 265), scopeTextScale: 1,
+        clip: CGRect(x: 585, y: 407, width: 278, height: 51), clipNumber: CGPoint(x: 738, y: 431.5), clipFont: 40,
+        knobs: [
+            Knob(param: .inputDB, center: CGPoint(x: 181.5, y: 586), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 113.5, y: 682, width: 140, height: 30), valueFont: 22, topic: .input),
+            Knob(param: .driveDB, center: CGPoint(x: 450, y: 586), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 381, y: 682, width: 140, height: 30), valueFont: 22, topic: .drive),
+            Knob(param: .ceilingDB, center: CGPoint(x: 721.5, y: 586), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 651.5, y: 682, width: 140, height: 30), valueFont: 22, topic: .ceiling),
+            Knob(param: .mix, center: CGPoint(x: 994, y: 585.5), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 921, y: 682, width: 140, height: 30), valueFont: 22, topic: .mix),
+            Knob(param: .outputDB, center: CGPoint(x: 1264, y: 586), pointerFrom: 36, pointerTo: 58, pointerWidth: 6,
+                 value: CGRect(x: 1191, y: 683, width: 140, height: 30), valueFont: 22, topic: .output),
+            Knob(param: .gold, center: CGPoint(x: 172.5, y: 802), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 134.5, y: 853, width: 76, height: 24), valueFont: 16, topic: .red),
+            Knob(param: .alchemy, center: CGPoint(x: 675.5, y: 802.5), pointerFrom: 17, pointerTo: 30, pointerWidth: 4.5,
+                 value: CGRect(x: 637.5, y: 853, width: 76, height: 24), valueFont: 16, topic: .fire)
+        ],
+        segments: [
+            Segments(param: .goldMode, cells: [("MODERN", 259, 370), ("CLASSIC", 370, 483)], y: 762, h: 36, font: 15, topic: .redStyle),
+            Segments(param: .boxTone, cells: [("FLAT", 824, 921), ("MODERN", 921, 1027), ("CLASSIC", 1027, 1136)], y: 799, h: 39, font: 15, topic: .boxTone),
+            Segments(param: .clipMode, cells: [("HARD", 94, 218), ("CLASSIC", 218, 348), ("MODERN", 348, 476)], y: 929, h: 44, font: 17, topic: .clipMode),
+            Segments(param: .oversampling, cells: [("1X", 767, 884), ("2X", 884, 994), ("4X", 994, 1115)], y: 930, h: 43, font: 17, topic: .oversampling)
+        ],
+        unity: Toggle(rect: CGRect(x: 290, y: 812, width: 163, height: 39), font: 16),
+        link: Toggle(rect: CGRect(x: 557, y: 914, width: 132, height: 52), font: 18),
+        delta: Toggle(rect: CGRect(x: 1202, y: 799, width: 143, height: 41), font: 17),
+        bypass: Toggle(rect: CGRect(x: 1181, y: 914, width: 174, height: 53), font: 18),
+        transport: Transport(play: CGRect(x: 31, y: 1019, width: 121, height: 47),
+                             load: CGRect(x: 165, y: 1019, width: 123, height: 47),
+                             samples: CGRect(x: 304, y: 1019, width: 152, height: 47),
+                             demo: CGRect(x: 471, y: 1019, width: 114, height: 47),
+                             fileName: CGRect(x: 602, y: 1031, width: 180, height: 26),
+                             progress: CGRect(x: 792, y: 1028, width: 457, height: 30),
+                             export: CGRect(x: 1277, y: 1020, width: 137, height: 46), font: 18),
+        bubbleScale: 1)
+
 
     // MARK: iPhone (851 x 1848, portrait, transport built into the picture)
     // Measured from the approved iPhone Face1 art (Red and Platinum share every position).

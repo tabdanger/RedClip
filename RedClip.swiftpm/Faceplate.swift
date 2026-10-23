@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Red Clip faceplate: Tyrone's picture (iPad: RCPlate, iPhone: RCPhonePlate, with every
+/// The Red Clip faceplate: Tyrone's picture (iPad: RCPlate, full screen; iPhone: RCPhonePlate; with every
 /// moving part removed) with the live parts drawn on top in exactly the same places: knob
 /// pointers and values, LED meters, the screen, the CLIP readout, the lit buttons and their labels.
 /// Positions come from a PlateLayout in picture pixels; the iPad and iPhone faces share all of
@@ -10,10 +10,10 @@ import SwiftUI
 struct FaceplateView: View {
     @ObservedObject var face: FaceModel
     @ObservedObject var params: ParamStore
-    var layout: PlateLayout = .current
+    var layout: PlateLayout? = nil
 
     private var theme: PlateTheme { face.theme }
-    private var L: PlateLayout { layout }
+    private var L: PlateLayout { layout ?? .current(face.faceplate) }
 
     /// In a DAW the iPhone face is cropped above its built-in transport.
     private var height: CGFloat { face.isPlugin ? L.pluginHeight : L.size.height }
