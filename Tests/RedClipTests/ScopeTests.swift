@@ -83,7 +83,7 @@ final class ScopeTests: XCTestCase {
             return (on, bent)
         }
         let hard = try atCeiling(0), classic = try atCeiling(1), modern = try atCeiling(2)
-        XCTAssertEqual(hard.bent, 0, "hard has no knee")
+        XCTAssertGreaterThan(hard.bent, 0, "hard bends into the ceiling like Fruity Soft Clipper")
         XCTAssertGreaterThan(classic.bent, 0); XCTAssertGreaterThan(modern.bent, 0)
         XCTAssertGreaterThan(classic.bent, modern.bent, "classic's knee is softer (wider) than modern's")
         XCTAssertGreaterThan(hard.onCeiling, classic.onCeiling)
