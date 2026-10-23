@@ -10,13 +10,15 @@ enum Param: Int, CaseIterable {
     case gold, goldMode, unity, alchemy, boxTone, delta
     // parallel mixer: with mixUnlink on, Dry and Wet are two separate levels instead of the Mix knob
     case mixUnlink, dry, wet
+    // Broil: instantaneous compression toward the ceiling (louder body, peaks untouched)
+    case broil
 
     var range: ClosedRange<Float> {
         switch self {
         case .inputDB, .outputDB: return -12...12
         case .driveDB: return 0...12
         case .ceilingDB: return -12...0
-        case .mix, .gold, .alchemy, .dry, .wet: return 0...100
+        case .mix, .gold, .alchemy, .dry, .wet, .broil: return 0...100
         case .clipMode: return 0...2        // 0 Hard, 1 Classic (soft knee), 2 Modern (medium knee)
         case .oversampling: return 0...2   // 1x, 2x, 4x
         case .goldMode: return 0...1        // 0 Modern (up to +2.5 dB), 1 Classic (up to +6 dB)
@@ -227,6 +229,19 @@ enum Curves {
         return x < 0 ? -y : y
     }
 
+    /// Broil: instantaneous compression, like the squeeze tape's magnetisation puts on a signal,
+    /// without tape's tilt or head bump. A memoryless curve on the clipper's output, scaled to the
+    /// ceiling: y = c * tanh(a x / c) / tanh(a). Nothing listens over time, so there is no attack
+    /// or release to pump or smear; every sample is shaped on its own. The ceiling maps to itself,
+    /// so peaks and transients that reach it stay exactly where they are, while everything under
+    /// it is lifted, quiet material most (up to a / tanh(a), about +8 dB at 100 %). No filter is
+    /// involved, so the tonal balance stays put. a = Broil (0...1) * broilMax.
+    static let broilMax: Float = 2.5
+
+    @inline(__always) static func broil(_ x: Float, ceiling c: Float, a: Float, norm: Float) -> Float {
+        c * tanh(a * x / c) * norm
+    }
+
     /// Most gain each Gold style adds at 100 %: Modern 2.5 dB, Classic 6 dB.
     static func goldMaxDB(classic: Bool) -> Float { classic ? 6 : 2.5 }
 
@@ -395,6 +410,7 @@ final class ClipDSP: @unchecked Sendable {
     private var sIn: Float = 1, sDrive: Float = 1, sOut: Float = 1
     private var sWet: Float = 1, sDry: Float = 0   // parallel mixer levels (from Mix, or Dry / Wet when unlinked)
     private var sCeil: Float = 1, sGold: Float = 0, sAlch: Float = 0, sBypass: Float = 0
+    private var sBroil: Float = 0
     private var sUnity: Float = 0
     private let smooth: Float          // 15 ms: knob moves and immediate automation, click-free
 
@@ -402,6 +418,10 @@ final class ClipDSP: @unchecked Sendable {
     private var goldOn = false
     private var goldG: Float = 0, goldK: Float = 1   // Red's curve for this sample (Curves.redShape)
     private var unityGain: Float = 1                  // Unity: G dB off after everything else
+
+    // Broil (per base-rate sample, like Red): the curve's steepness and its 1 / tanh(steepness)
+    private var broilOn = false
+    private var broilA: Float = 0, broilNorm: Float = 1
     private var clipOver: Float = 1   // largest (signal into clipper / ceiling) this block
 
     /// Clip Clock: song position (seconds) of this block's first sample, set by whoever calls
@@ -527,6 +547,7 @@ final class ClipDSP: @unchecked Sendable {
         let tGold = p[Param.gold.rawValue] / 100 * Curves.goldMaxDB(classic: goldClassic)   // in dB
         let tUnity: Float = unity ? 1 : 0
         let tAlch = p[Param.alchemy.rawValue] / 100
+        let tBroil = p[Param.broil.rawValue] / 100
         let levels = ClipDSP.mixLevels(p)
         let tWet = levels.wet, tDry = levels.dry
         let tBypass: Float = p[Param.bypass.rawValue] > 0.5 ? 1 : 0
@@ -554,11 +575,11 @@ final class ClipDSP: @unchecked Sendable {
         let dDrive = step(.driveDB, tDrive, sDrive)
         let dWet = step(levels.wetParam, tWet, sWet), dDry = step(levels.dryParam, tDry, sDry)
         let dCeil = step(.ceilingDB, tCeil, sCeil), dGold = step(.gold, tGold, sGold)
-        let dAlch = step(.alchemy, tAlch, sAlch)
+        let dAlch = step(.alchemy, tAlch, sAlch), dBroil = step(.broil, tBroil, sBroil)
         @inline(__always) func ramps(_ q: Param) -> Bool { gliding & (1 << UInt32(q.rawValue)) != 0 }
         let gIn = ramps(.inputDB), gOut = ramps(.outputDB), gDrive = ramps(.driveDB)
         let gWet = ramps(levels.wetParam), gDry = ramps(levels.dryParam)
-        let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy)
+        let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy), gBroil = ramps(.broil)
         let ks = smooth
         var ringPos = shared.ringTotal.value          // only this thread writes it
 
@@ -569,7 +590,15 @@ final class ClipDSP: @unchecked Sendable {
             sCeil += gCeil ? dCeil : ks * (tCeil - sCeil); sGold += gGold ? dGold : ks * (tGold - sGold)
             sAlch += gAlch ? dAlch : ks * (tAlch - sAlch); sBypass += ks * (tBypass - sBypass)
             sUnity += ks * (tUnity - sUnity)
+            sBroil += gBroil ? dBroil : ks * (tBroil - sBroil)
             let c = sCeil
+
+            // Broil for this sample (see shape())
+            broilOn = sBroil > 0.0005
+            if broilOn {
+                broilA = sBroil * Curves.broilMax
+                broilNorm = 1 / tanh(broilA)
+            }
 
             // Red for this sample: up to G dB of gain fading to 0 dB at the ceiling; Unity takes
             // the G dB back off at the very end
@@ -710,7 +739,7 @@ final class ClipDSP: @unchecked Sendable {
         }
     }
 
-    /// Red (Gold processing) -> clipper -> Alchemy, at the oversampled rate.
+    /// Red (Gold processing) -> clipper -> Broil -> Alchemy, at the oversampled rate.
     @inline(__always) private func shape(_ x: Float, _ s: Channel, _ c: Float, _ knee: Float,
                                          _ goldClassic: Bool, _ aCoef: Float) -> Float {
         var y = x
@@ -721,6 +750,7 @@ final class ClipDSP: @unchecked Sendable {
         if a > c { clipOver = max(clipOver, a / c) }     // CLIP readout: how far past the ceiling
         y = Curves.clip(y, ceiling: c, knee: knee)
         lastPost = y
+        if broilOn { y = Curves.broil(y, ceiling: c, a: broilA, norm: broilNorm) }
 
         // Alchemy: amplitude-dependent tilt around 4 kHz. Near the ceiling the highs dip up to
         // about 1 dB and the lows lift slightly, softening the edge clipping leaves behind.
