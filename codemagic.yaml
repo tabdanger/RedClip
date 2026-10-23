@@ -8,6 +8,11 @@
 #   with the Admin role, with its Issuer ID and Key ID. Nothing else is needed: the Team ID is read
 #   from the bundle ID, and the build number is one more than the latest build in App Store Connect.
 #   To force a build number, add an environment variable REDCLIP_BUILD (digits) in the app settings.
+#
+# The "checks" workflow is .github/workflows/build.yml on Codemagic: it builds the Playgrounds
+# package and the app + AUv3 from the Xcode project (unsigned), then runs the regression tests on
+# the iOS Simulator with the Thread Sanitizer on. Nothing is signed or uploaded. It starts by
+# itself for every pull request (and can be started by hand on any branch).
 workflows:
   testflight:
     name: Upload Red Clip to TestFlight
@@ -229,3 +234,103 @@ workflows:
 
     artifacts:
       - $HOME/redclip-tmp/archive.log
+
+  checks:
+    name: Build and test Red Clip
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    triggering:
+      events:
+        - pull_request
+      branch_patterns:
+        - pattern: '*'
+          include: true
+          source: true
+      cancel_previous_builds: true
+    environment:
+      xcode: latest
+    scripts:
+      - name: Use the GitHub build scripts here
+        script: |
+          mkdir -p "$HOME/redclip-tmp"
+          {
+            echo "GITHUB_WORKSPACE=$CM_BUILD_DIR"
+            echo "RUNNER_TEMP=$HOME/redclip-tmp"
+          } >> "$CM_ENV"
+          echo "Xcode: $(xcodebuild -version | tr '\n' ' ')"
+          case "$(xcodebuild -version | head -1)" in
+            "Xcode 2"[6-9]*) ;;
+            *) echo "::error title=Xcode::Red Clip is built with Xcode 26 or later."; exit 1 ;;
+          esac
+
+      - name: Build the Swift Playgrounds app (Release, unsigned)
+        working_directory: RedClip.swiftpm
+        script: |
+          xcodebuild \
+            -scheme "Red Clip" \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd-release" \
+            CODE_SIGNING_ALLOWED=NO \
+            build > "$RUNNER_TEMP/build-release.log" 2>&1 || true
+          python3 "$GITHUB_WORKSPACE/.github/scripts/annotate.py" "$RUNNER_TEMP/build-release.log" "Playgrounds package"
+          if ! grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/build-release.log"; then tail -30 "$RUNNER_TEMP/build-release.log"; exit 1; fi
+
+      - name: Make the Xcode project (app + AUv3 effect) with XcodeGen
+        script: |
+          command -v xcodegen > /dev/null || brew install xcodegen > "$RUNNER_TEMP/brew.log" 2>&1 || { tail -20 "$RUNNER_TEMP/brew.log"; exit 1; }
+          python3 xcode/generate.py | tee -a "$CM_ENV"
+          xcodegen generate --spec xcode/project.yml
+
+      - name: Build Red Clip + AUv3 from the Xcode project (Release, unsigned)
+        script: |
+          xcodebuild \
+            -project xcode/RedClip.xcodeproj \
+            -scheme RedClip \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd-xcode" \
+            MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
+            CODE_SIGNING_ALLOWED=NO \
+            build > "$RUNNER_TEMP/build-xcode.log" 2>&1 || true
+          python3 .github/scripts/annotate.py "$RUNNER_TEMP/build-xcode.log" "Xcode build (app + AUv3)"
+          if ! grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/build-xcode.log"; then tail -30 "$RUNNER_TEMP/build-xcode.log"; exit 1; fi
+          APP=$(find "$RUNNER_TEMP/dd-xcode/Build/Products" -maxdepth 2 -name "Red Clip.app" | head -1)
+          if [ ! -d "$APP/PlugIns/RedClipAU.appex" ]; then
+            echo "::error title=AUv3::The plug-in (PlugIns/RedClipAU.appex) is missing from the app."
+            exit 1
+          fi
+          echo "Red Clip.app built with the AUv3 effect inside."
+
+      - name: Regression tests on the iOS Simulator (real AUv3 render path, Thread Sanitizer on)
+        script: |
+          SIM=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          ids = [dev['udid'] for rt in sorted(d, reverse=True) if 'iOS' in rt for dev in d[rt] if dev['name'].startswith('iPhone')]
+          print(ids[0] if ids else '')")
+          if [ -z "$SIM" ]; then echo "::error title=Tests::No iPhone simulator on this machine."; exit 1; fi
+          xcodebuild test \
+            -project xcode/RedClip.xcodeproj \
+            -scheme RedClipTests \
+            -destination "id=$SIM" \
+            -enableThreadSanitizer YES \
+            -derivedDataPath "$RUNNER_TEMP/dd-tests" \
+            CODE_SIGNING_ALLOWED=NO \
+            > "$RUNNER_TEMP/tests.log" 2>&1 || true
+          python3 .github/scripts/annotate.py "$RUNNER_TEMP/tests.log" "Tests"
+          grep -E "^Test Case .*(passed|failed) \(" "$RUNNER_TEMP/tests.log" || true
+          grep -E "Fatal error|Precondition failed|crashed|unexpected exit" "$RUNNER_TEMP/tests.log" | head -4 || true
+          grep -E "error: .*: (XCT|failed)" "$RUNNER_TEMP/tests.log" | head -8 || true
+          RACES=$(grep -c "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" || true)
+          if [ "$RACES" != "0" ]; then
+            echo "Thread Sanitizer: $RACES reports"
+            grep -A16 "WARNING: ThreadSanitizer" "$RUNNER_TEMP/tests.log" | head -60
+            exit 1
+          fi
+          echo "Thread Sanitizer: no data races reported."
+          grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/tests.log"
+
+    artifacts:
+      - $HOME/redclip-tmp/build-*.log
+      - $HOME/redclip-tmp/tests.log
