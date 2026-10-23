@@ -124,6 +124,13 @@ extension Preset {
         Preset(bank: "Gospel Pack", name: "Gospel Master", values: [.inputDB: 2, .driveDB: 3, .clipMode: 1, .oversampling: 2, .gold: 45, .goldMode: 1, .alchemy: 45, .boxTone: 2]),
         Preset(bank: "Gospel Pack", name: "Choir Bus Glue", values: [.driveDB: 4, .ceilingDB: -1.0, .mix: 80, .outputDB: 0.5, .clipMode: 1, .oversampling: 2, .gold: 45, .goldMode: 1, .unity: 1, .alchemy: 55, .boxTone: 2]),
         Preset(bank: "Gospel Pack", name: "Gospel Drums Live", values: [.driveDB: 6, .ceilingDB: -1.0, .mix: 80, .outputDB: 0.5, .oversampling: 2, .gold: 55, .goldMode: 1, .alchemy: 35, .boxTone: 2]),
-        Preset(bank: "Gospel Pack", name: "Organ & Keys Bus", values: [.driveDB: 5, .ceilingDB: -0.5, .clipMode: 1, .oversampling: 2, .gold: 55, .goldMode: 1, .unity: 1, .alchemy: 50, .boxTone: 2])
+        Preset(bank: "Gospel Pack", name: "Organ & Keys Bus", values: [.driveDB: 5, .ceilingDB: -0.5, .clipMode: 1, .oversampling: 2, .gold: 55, .goldMode: 1, .unity: 1, .alchemy: 50, .boxTone: 2]),
+        // Parallel Pack (unlinked mixer: Dry and Wet set separately)
+        Preset(bank: "Parallel Pack", name: "Bottom-Up Crush", values: [.mixUnlink: 1, .dry: 100, .wet: 35, .driveDB: 12, .ceilingDB: -6.0, .outputDB: -1.5, .clipMode: 0, .oversampling: 2, .gold: 80, .goldMode: 1, .alchemy: 30, .boxTone: 2]),
+        Preset(bank: "Parallel Pack", name: "Peaks Back", values: [.mixUnlink: 1, .dry: 25, .wet: 100, .driveDB: 3, .ceilingDB: -1.0, .outputDB: -1.0, .clipMode: 1, .oversampling: 2, .gold: 20, .alchemy: 30]),
+        Preset(bank: "Parallel Pack", name: "Parallel Red Glow", values: [.mixUnlink: 1, .dry: 100, .wet: 50, .driveDB: 6, .ceilingDB: -3.0, .outputDB: -2.0, .clipMode: 1, .oversampling: 2, .gold: 100, .goldMode: 1, .unity: 1, .alchemy: 40, .boxTone: 2]),
+        Preset(bank: "Parallel Pack", name: "Drum Bus Parallel Smash", values: [.mixUnlink: 1, .dry: 100, .wet: 60, .driveDB: 12, .ceilingDB: -3.0, .outputDB: -2.5, .clipMode: 0, .oversampling: 2, .gold: 60, .goldMode: 1, .alchemy: 20]),
+        Preset(bank: "Parallel Pack", name: "808 Grit Underneath", values: [.mixUnlink: 1, .dry: 100, .wet: 30, .driveDB: 12, .ceilingDB: -8.0, .outputDB: -1.0, .clipMode: 0, .oversampling: 2, .gold: 70, .goldMode: 1, .alchemy: 50, .boxTone: 2]),
+        Preset(bank: "Parallel Pack", name: "Vocal Edge Blend", values: [.mixUnlink: 1, .dry: 90, .wet: 40, .driveDB: 8, .ceilingDB: -2.0, .outputDB: -1.5, .oversampling: 2, .gold: 40, .unity: 1, .alchemy: 70, .boxTone: 1])
     ]
 }

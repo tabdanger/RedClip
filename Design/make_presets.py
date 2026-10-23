@@ -1,4 +1,4 @@
-# Run from the repo root: python3 Design/make_presets.py  (then re-add .delta: 1 to "Hear The Clip (Delta)")
+# Run from the repo root: python3 Design/make_presets.py  (then re-add .delta: 1 to "Hear The Clip (Delta)" and the hand-written Parallel Pack bank at the end)
 # Original Red Clip factory presets. Fields:
 # name, input, drive, ceiling, mix, output, clip(0 Hard 1 Classic 2 Modern), os(0 1x,1 2x,2 4x),
 # red %, redMode(0 Modern 1 Classic), unity, fire %, box(0 Flat 1 Modern 2 Classic)

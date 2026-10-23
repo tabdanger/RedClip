@@ -10,7 +10,7 @@ import SwiftUI
 enum HelpTopic: String, CaseIterable {
     case help, presets, ab, undo, power
     case inputMeter, outputMeter, screen, clipReadout
-    case input, drive, ceiling, mix, output
+    case input, drive, ceiling, mix, mixer, output
     case red, redStyle, unity, fire, boxTone, delta
     case clipMode, link, oversampling, bypass
     case play, load, samples, demo, export
@@ -31,6 +31,7 @@ enum HelpTopic: String, CaseIterable {
         case .drive: return "Drive"
         case .ceiling: return "Ceiling"
         case .mix: return "Mix"
+        case .mixer: return "Parallel Mixer"
         case .output: return "Output"
         case .red: return "Red"
         case .redStyle: return "Red Style"
@@ -77,7 +78,9 @@ enum HelpTopic: String, CaseIterable {
         case .ceiling:
             return "The level where clipping starts, from 0 down to -12 dB. The clipped signal never goes above it."
         case .mix:
-            return "Blends the processed sound with the dry signal. 100% is fully processed, lower brings back some of the original."
+            return "Blends the processed sound with the dry signal. 100% is fully processed, lower brings back some of the original. With the mixer unlinked, this knob sets the Wet level."
+        case .mixer:
+            return "Tap the Mix value to open the parallel mixer. Unlink it and Dry and Wet become two separate levels: keep 100% dry and blend in heavily clipped wet for bottom-up distortion, or clip gently and bring the peaks back with the dry. Both stay perfectly in time, so blending never sounds phasey."
         case .output:
             return "The final level after everything else. With LINK on, it moves the opposite way to Input."
         case .red:

@@ -107,6 +107,9 @@ extension Param {
         case .alchemy: return "Fire"
         case .boxTone: return "Box Tone"
         case .delta: return "Delta"
+        case .mixUnlink: return "Unlink Dry/Wet"
+        case .dry: return "Dry"
+        case .wet: return "Wet"
         }
     }
 
@@ -117,7 +120,7 @@ extension Param {
         case .oversampling: return ["1x", "2x", "4x"]
         case .goldMode: return ["Modern", "Classic"]
         case .boxTone: return ["Flat", "Modern", "Classic"]
-        case .link, .bypass, .unity, .delta: return ["Off", "On"]
+        case .link, .bypass, .unity, .delta, .mixUnlink: return ["Off", "On"]
         default: return nil
         }
     }

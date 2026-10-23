@@ -36,6 +36,7 @@ final class ParamStore: ObservableObject {
             let old = values[p.rawValue]
             guard v != old else { return }
             if p != .bypass { registerUndo() }
+            if p == .mixUnlink { handOverMixer(unlinking: v > 0.5) }
             write(p, v)
             // LINK: Input and Output trims move in opposite directions, so level stays put
             if values[Param.link.rawValue] > 0.5 {
@@ -43,6 +44,32 @@ final class ParamStore: ObservableObject {
                 if p == .outputDB { write(.inputDB, clamp(.inputDB, self[.inputDB] - (v - old))) }
             }
         }
+    }
+
+    /// MIXER: unlinking starts Dry and Wet where Mix had them, so the sound doesn't jump;
+    /// relinking keeps the same dry / wet balance. Written before the switch itself, so the
+    /// audio never sees the new mode with the old levels.
+    private func handOverMixer(unlinking: Bool) {
+        let mix = self[.mix], dry = self[.dry], wet = self[.wet]
+        if unlinking {
+            write(.wet, mix)
+            write(.dry, 100 - mix)
+        } else if dry + wet > 0 {
+            write(.mix, clamp(.mix, (wet / (dry + wet) * 100).rounded()))
+        }
+    }
+
+    var mixUnlinked: Bool { self[.mixUnlink] > 0.5 }
+
+    /// One side of the parallel mixer. Linked, both sides move the Mix knob (Dry = 100 - Mix);
+    /// unlinked, each side is its own control.
+    func mixerBinding(wet: Bool) -> Binding<Float> {
+        Binding(get: {
+            if self.mixUnlinked { return self[wet ? .wet : .dry] }
+            return wet ? self[.mix] : 100 - self[.mix]
+        }, set: { v in
+            if self.mixUnlinked { self[wet ? .wet : .dry] = v } else { self[.mix] = wet ? v : 100 - v }
+        })
     }
 
     func binding(_ p: Param) -> Binding<Float> {

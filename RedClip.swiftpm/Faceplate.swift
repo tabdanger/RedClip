@@ -145,15 +145,40 @@ struct FaceplateView: View {
             ForEach(L.knobs.indices, id: \.self) { i in
                 let k = L.knobs[i]
                 let box = k.pointerTo * 1.55
-                PlateKnob(value: params.binding(k.param), range: k.param.range, defaultValue: k.param.defaultValue,
+                // MIX turns the Wet level while the parallel mixer is unlinked
+                let p = k.param == .mix && params.mixUnlinked ? Param.wet : k.param
+                PlateKnob(value: params.binding(p), range: p.range, defaultValue: p.defaultValue,
                           capRadius: k.pointerTo, pointerFrom: k.pointerFrom, pointerTo: k.pointerTo,
                           pointerWidth: k.pointerWidth, theme: theme)
                     .helpTarget(k.topic, face)
                     .place(x: k.center.x - box, y: k.center.y - box, w: box * 2, h: box * 2)
-                PlateValue(text: Self.valueText(k.param, params[k.param]), size: k.valueFont, theme: theme)
-                    .place(k.value)
+                if k.param == .mix {
+                    mixReadout(k)
+                } else {
+                    PlateValue(text: Self.valueText(k.param, params[k.param]), size: k.valueFont, theme: theme)
+                        .place(k.value)
+                }
             }
         }
+    }
+
+    /// The value under MIX opens the parallel mixer (separate Dry and Wet). Unlinked, it shows both levels.
+    private func mixReadout(_ k: PlateLayout.Knob) -> some View {
+        let text = params.mixUnlinked
+            ? String(format: "D %.0f  W %.0f", params[.dry], params[.wet])
+            : Self.valueText(.mix, params[.mix])
+        return Button { face.toggleRCMenu(page: .mixer, anchor: .mixer) } label: {
+            ZStack {
+                Color.clear
+                PlateValue(text: text, size: k.valueFont, theme: theme)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open parallel mixer, \(text)")
+        .rcMenuAnchor(.mixer)
+        .helpTarget(.mixer, face)
+        .place(k.value)
     }
 
     static func valueText(_ p: Param, _ v: Float) -> String {
@@ -307,6 +332,7 @@ struct PlateValue: View {
             .foregroundStyle(theme.text)
             .shadow(color: theme.textShadow, radius: 1, y: 1)
             .lineLimit(1)
+            .minimumScaleFactor(0.6)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
     }
