@@ -26,6 +26,14 @@ final class FaceModel: ObservableObject {
         didSet { UserDefaults.standard.set(faceplate.rawValue, forKey: Self.faceKey) }
     }
     var theme: PlateTheme { faceplate == .face1Platinum ? .platinum : .red }
+
+    /// The screen's dB zoom tier (MeterZoom.swift). Remembered between launches.
+    private static let zoomKey = "RedClip.MeterZoom"
+    @Published var meterZoom: MeterZoom = MeterZoom(rawValue: UserDefaults.standard.integer(forKey: FaceModel.zoomKey)) ?? .full {
+        didSet { UserDefaults.standard.set(meterZoom.rawValue, forKey: Self.zoomKey) }
+    }
+
+    func stepMeterZoom() { meterZoom = meterZoom.next }
     private var helpHide: DispatchWorkItem?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?

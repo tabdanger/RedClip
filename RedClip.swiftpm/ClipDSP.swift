@@ -17,7 +17,7 @@ enum Param: Int, CaseIterable {
         switch self {
         case .inputDB, .outputDB: return -12...12
         case .driveDB: return 0...12
-        case .ceilingDB: return -12...0
+        case .ceilingDB: return -36...0     // Gold Clip's range: Red, the clipper and Fire all follow it down
         case .mix, .gold, .alchemy, .dry, .wet, .broil: return 0...100
         case .clipMode: return 0...2        // 0 Hard, 1 Classic (soft knee), 2 Modern (medium knee)
         case .oversampling: return 0...2   // 1x, 2x, 4x
