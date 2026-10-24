@@ -125,6 +125,7 @@ extension Param {
         case .mixUnlink: return "Unlink Dry/Wet"
         case .dry: return "Dry"
         case .wet: return "Wet"
+        case .broil: return "Broil"
         }
     }
 
