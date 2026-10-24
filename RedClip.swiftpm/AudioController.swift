@@ -65,6 +65,11 @@ final class AudioController: ObservableObject {
         face.onPowerChange = { [weak self] on in self?.powerChanged(on) }
         face.loadSample = { [weak self] url in self?.load(url: url) }
         face.loadDemo = { [weak self] in self?.loadDemo() }
+        face.clipClockReset = { [weak self] in self?.startClipClockScan() }
+        // a setting that feeds the clipper changed: scan the file again once it settles
+        Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.rescanIfSettingsChanged() }
+        }
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
                                                object: nil, queue: .main) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -195,7 +200,6 @@ final class AudioController: ObservableObject {
         let ph = playhead, flag = playFlag, seek = seekRequest, sL = scratchL, sR = scratchR, chunk = AudioController.chunk
         ph.value = 0          // the engine is stopped here, so nothing renders while these reset
         clearScope()
-        shared.clipClock.requestReset()                // a new song starts a new Clip Clock pass
         seek.value = -1
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
@@ -207,6 +211,7 @@ final class AudioController: ObservableObject {
         source = node
         buffer = b
         fileName = name
+        startClipClockScan()                           // the new song's loudest moment
         exportURL = nil
         engine.prepare()
         guard isPowered else { return }
@@ -244,9 +249,7 @@ final class AudioController: ObservableObject {
                 if target >= 0 { pos = min(target, b.frames - 1) }
             }
             while done < total {
-                // never across the loop point, so the Clip Clock's song position runs straight
                 let n = min(total - done, chunk, b.frames - pos)
-                dsp.songTime = Double(pos) / b.sampleRate
                 for i in 0..<n {
                     sL[i] = b.left[pos]; sR[i] = b.right[pos]
                     pos += 1
@@ -269,6 +272,72 @@ final class AudioController: ObservableObject {
         } catch {
             errorMessage = "Audio session error: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: Clip Clock (whole file)
+    //
+    // The loaded file runs through its own ClipDSP (current settings, no audio out), off the main
+    // thread, and the biggest overshoot past the ceiling and its position land in the Clip Clock.
+    // Only the settings that change what reaches the clipper start a new scan; a newer scan
+    // stops an older one.
+
+    private static let clipSettings: [Param] = [.inputDB, .driveDB, .ceilingDB, .oversampling, .gold, .goldMode]
+    private var scannedSettings: [Float] = []
+    private let scanGeneration = AtomicInt(0)
+
+    private func rescanIfSettingsChanged() {
+        guard buffer != nil else { return }
+        if Self.clipSettings.map({ shared[$0] }) != scannedSettings { startClipClockScan() }
+    }
+
+    func startClipClockScan() {
+        guard let b = buffer else { return }
+        scannedSettings = Self.clipSettings.map { shared[$0] }
+        let settings = Param.allCases.map { shared[$0] }
+        let generation = scanGeneration, mine = generation.value &+ 1
+        generation.value = mine
+        let clock = shared.clipClock
+        clock.scanning.value = 1
+        Task {
+            let found = await Task.detached(priority: .utility) {
+                AudioController.scanClipClock(b, settings: settings) { generation.value != mine }
+            }.value
+            guard generation.value == mine else { return }     // a newer scan took over
+            clock.maxDB.value = found?.db ?? 0
+            clock.seconds.value = found?.seconds ?? -1
+            clock.scanning.value = 0
+        }
+    }
+
+    /// The whole file through a private ClipDSP; nil if `stop` says a newer scan took over.
+    nonisolated static func scanClipClock(_ b: PlayerBuffer, settings: [Float],
+                                          stop: () -> Bool) -> (db: Float, seconds: Float)? {
+        let state = SharedState()
+        for (i, v) in settings.enumerated() where i < state.params.count { state.params[i] = v }
+        state[.bypass] = 0
+        let dsp = ClipDSP(sampleRate: b.sampleRate, shared: state)
+        let chunk = 4096
+        let outL = UnsafeMutablePointer<Float>.allocate(capacity: chunk)
+        let outR = UnsafeMutablePointer<Float>.allocate(capacity: chunk)
+        defer { outL.deallocate(); outR.deallocate() }
+
+        // settle the control smoothers on the opening 100 ms first, recording nothing
+        let preroll = min(b.frames, Int(b.sampleRate / 10))
+        var pos = 0
+        while pos < preroll {
+            let n = min(chunk, preroll - pos)
+            dsp.process(inL: b.left + pos, inR: b.right + pos, outL: outL, outR: outR, frames: n)
+            pos += n
+        }
+        pos = 0
+        while pos < b.frames {
+            if stop() { return nil }
+            let n = min(chunk, b.frames - pos)
+            dsp.songTime = Double(pos) / b.sampleRate
+            dsp.process(inL: b.left + pos, inR: b.right + pos, outL: outL, outR: outR, frames: n)
+            pos += n
+        }
+        return (state.clipClock.maxDB.value, state.clipClock.seconds.value)
     }
 
     // MARK: Export

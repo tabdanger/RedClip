@@ -142,7 +142,7 @@ struct FaceplateView: View {
     /// The Clip Clock panel in the bottom-left corner of the screen's glass (screen units, 258 high).
     private var clipClock: some View {
         let s = L.screen.height / PlateScreen.H, size = ClipClockPanel.size
-        return ClipClockPanel(clock: face.shared.clipClock)
+        return ClipClockPanel(clock: face.shared.clipClock, onReset: face.clipClockReset)
             .scaleEffect(s)
             .helpTarget(.clipClock, face)
             .place(x: L.screen.minX + 60 * s, y: L.screen.minY + 166 * s, w: size.width * s, h: size.height * s)

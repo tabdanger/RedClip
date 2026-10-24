@@ -7,17 +7,21 @@ import SwiftUI
 // position of that peak. Play the record through once, jump to that spot and dial Drive, Red and
 // Fire in against the loudest moment. RESET starts a new pass.
 //
-// The audio thread (ClipDSP) keeps its own running best and publishes it here only when it grows;
-// the panel reads these at display rate. Song position comes from the app's playhead or, in a
-// DAW, the host's transport.
+// In the app the whole loaded file is scanned in the background with the current settings
+// (AudioController.scanClipClock), and scanned again whenever a setting that feeds the clipper
+// changes, so the readout is the loudest moment of the entire song, not just what has played.
+// In a DAW the host owns the audio, so the audio thread (ClipDSP) keeps a running best while the
+// host's transport plays and publishes it here only when it grows. The panel reads these at
+// display rate.
 
 /// Shared between the audio thread and the UI (lock-free, allocated once).
 final class ClipClockState: @unchecked Sendable {
     let maxDB = AtomicFloat(0)        // dB past the ceiling; 0 = nothing clipped since the reset
     let seconds = AtomicFloat(-1)     // song position of that peak; -1 = unknown
     let reset = AtomicInt(0)          // UI sets 1, the audio thread takes it
+    let scanning = AtomicInt(0)       // 1 while the app is scanning the whole file
 
-    deinit { maxDB.deallocate(); seconds.deallocate(); reset.deallocate() }
+    deinit { maxDB.deallocate(); seconds.deallocate(); reset.deallocate(); scanning.deallocate() }
 
     /// Any thread: start a new pass. The audio thread clears its own best on the next block.
     func requestReset() {
@@ -41,6 +45,8 @@ final class ClipClockState: @unchecked Sendable {
 /// The Clip Clock panel, drawn on the screen's glass in the screen's own units (258 high).
 struct ClipClockPanel: View {
     let clock: ClipClockState
+    /// The app scans the file again; nil in a DAW, where reset starts a new live pass.
+    var onReset: (() -> Void)? = nil
     @State private var dbText = ClipClockState.dbText(0)
     @State private var timeText = ClipClockState.timeText(-1)
 
@@ -52,7 +58,10 @@ struct ClipClockPanel: View {
         HStack(alignment: .bottom, spacing: 10) {
             column("MAX CLIP", dbText, color: Color(hex: 0xf1f1f3), width: 82)
             column("MIN:SEC", timeText, color: Self.time, width: 92)
-            Button { clock.requestReset(); refresh() } label: {
+            Button {
+                if let onReset { onReset() } else { clock.requestReset() }
+                refresh()
+            } label: {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Self.label)
@@ -92,8 +101,9 @@ struct ClipClockPanel: View {
     }
 
     private func refresh() {
-        let d = ClipClockState.dbText(clock.maxDB.value)
-        let t = ClipClockState.timeText(clock.seconds.value)
+        let busy = clock.scanning.value != 0
+        let d = busy ? "···" : ClipClockState.dbText(clock.maxDB.value)
+        let t = busy ? "···" : ClipClockState.timeText(clock.seconds.value)
         if d != dbText { dbText = d }
         if t != timeText { timeText = t }
     }

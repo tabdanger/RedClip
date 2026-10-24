@@ -4,7 +4,7 @@ New in this build:
 - Pause freezes the screen, power off clears it, silence is a flat line.
 - Logic automation is now sample-accurate, and automation ramps play out over their full length.
 - Red Clip runs on iPhone as well as iPad, with matching red and Platinum faceplates.
-- Clip Clock (bottom left of the screen): MAX CLIP holds the most the signal went past the ceiling, MIN:SEC shows where in the song it happened. The arrow resets it. In Logic it follows the song position.
+- Clip Clock (bottom left of the screen): MAX CLIP holds the most the signal went past the ceiling, MIN:SEC shows where in the song it happens. In the app it scans the whole file with your settings and rescans when you change them. In Logic it follows the song position as it plays.
 
 Please try:
 - Unlink the mixer, set Dry 100% and Wet low, then crank Drive: the distortion should sit under the track with no phasey or hollow sound at 1x, 2x and 4x.
