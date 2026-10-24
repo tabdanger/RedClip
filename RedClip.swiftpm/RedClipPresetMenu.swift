@@ -1,20 +1,18 @@
 // Red Clip — the REDCLIP MENU: a compact machined-metal hardware panel for audio, presets and
 // the faceplate finish. Requires the existing Red Clip types; not a standalone app.
 // iOS 17+, SwiftUI. Opened from the preset name (Faceplate.swift) and the app's Samples key
-// (AppRootView.swift), and the parallel mixer from the Mix value; hosted once per root, outside
-// the scaled faceplate, by redClipPresetMenuHost.
+// (AppRootView.swift); hosted once per root, outside the scaled faceplate, by redClipPresetMenuHost.
 // One page at a time inside one panel: pinned header (Back / title / Close), a scrolling list,
-// and on the root page a pinned SETTINGS footer (Parallel Mixer, Faceplate).
+// and on the root page a pinned SETTINGS footer (Faceplate).
 import SwiftUI
 
-enum RCMenuAnchor: Hashable { case presets, samples, mixer }
+enum RCMenuAnchor: Hashable { case presets, samples }
 
 enum RCMenuPage: Equatable {
     case home
     case bank(String)
     case samples
     case faceplates
-    case mixer
 
     var title: String {
         switch self {
@@ -22,7 +20,6 @@ enum RCMenuPage: Equatable {
         case .bank(let name): return name
         case .samples: return "Samples"
         case .faceplates: return "Faceplate"
-        case .mixer: return "Parallel Mixer"
         }
     }
 }
@@ -108,8 +105,7 @@ private struct RCMenuHost: ViewModifier {
                         let frame = RCMenuPlacement.frame(size: geometry.size,
                                                          safe: geometry.safeAreaInsets,
                                                          anchor: trigger,
-                                                         largeText: typeSize >= .xxxLarge,
-                                                         height: request.page == .mixer ? 430 : nil)
+                                                         largeText: typeSize >= .xxxLarge)
                         ZStack(alignment: .topLeading) {
                             // Invisible outside-tap catcher. It consumes the dismissal tap
                             // so a control underneath cannot turn on accidentally. No scrim, no blur.
@@ -148,9 +144,7 @@ enum RCMenuPlacement {
     /// A phone, a narrow iPad window or a small AUv3 view.
     static func isCompact(_ size: CGSize) -> Bool { size.width < 600 || size.height < 520 }
 
-    /// `height`: a fixed panel height (the mixer), else the browser's height for this space.
-    static func frame(size: CGSize, safe: EdgeInsets, anchor: CGRect,
-                      largeText: Bool = false, height fixed: CGFloat? = nil) -> CGRect {
+    static func frame(size: CGSize, safe: EdgeInsets, anchor: CGRect, largeText: Bool = false) -> CGRect {
         let left = min(size.width, max(0, safe.leading) + margin)
         let top = min(size.height, max(0, safe.top) + margin)
         let right = max(left, size.width - max(0, safe.trailing) - margin)
@@ -161,7 +155,7 @@ enum RCMenuPlacement {
         let compact = isCompact(size)
         let preferredWidth: CGFloat = (compact ? 320 : 364) + (largeText ? 60 : 0)
         let width = min(preferredWidth, availableWidth)
-        var height = min(availableHeight, fixed ?? (compact ? 600 : 680))
+        var height = min(availableHeight, compact ? 600 : 680)
 
         let x = min(max(anchor.midX - width / 2, left), max(left, right - width))
         let below = bottom - anchor.maxY - 8
@@ -278,11 +272,7 @@ private struct RCMenuPanel: View {
                     .opacity(page == .home ? 1 : 0)
                     .allowsHitTesting(page == .home)
                     .accessibilityHidden(page != .home)
-                if page == .mixer {
-                    // Not in a scroll view, so the knobs' vertical drags are never taken for scrolling.
-                    RCMixerPage(params: params)
-                        .background(RCMenuInk.surface)
-                } else if page != .home {
+                if page != .home {
                     subpageList
                         .background(RCMenuInk.surface)
                 }
@@ -343,7 +333,7 @@ private struct RCMenuPanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     switch page {
-                    case .home, .mixer:
+                    case .home:
                         EmptyView()
                     case .bank(let bank):
                         presetRows(bank: bank)
@@ -380,11 +370,6 @@ private struct RCMenuPanel: View {
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             sectionTitle("Settings")
-            RCMenuRow(title: "Parallel Mixer", icon: "slider.horizontal.2.square",
-                      detail: params.mixUnlinked ? "Unlinked" : "Linked", chevron: true) {
-                // reopens beside the Mix knob, sized for the mixer
-                face.rcMenuRequest = RCMenuRequest(page: .mixer, anchor: .mixer)
-            }
             RCMenuRow(title: "Faceplate", icon: "paintbrush.pointed", chevron: true,
                       separator: false, hint: face.faceplate.title) {
                 navigate(.faceplates)
@@ -534,74 +519,6 @@ private struct RCMenuPanel: View {
             let expected = preset.values[parameter] ?? parameter.defaultValue
             return abs(params[parameter] - expected) < 0.0001
         }
-    }
-}
-
-// MARK: - Parallel mixer
-
-/// The parallel mixer: LINKED is the classic Mix crossfade, UNLINKED gives Dry and Wet their own
-/// levels.
-@MainActor
-private struct RCMixerPage: View {
-    @ObservedObject var params: ParamStore
-
-    var body: some View {
-        ViewThatFits(in: .vertical) {
-            content(knob: 112, caption: true)
-            content(knob: 84, caption: false)
-            content(knob: 64, caption: false)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private func content(knob: CGFloat, caption: Bool) -> some View {
-        let unlinked = params.mixUnlinked
-        return VStack(spacing: 12) {
-            HStack(spacing: 6) {
-                modeButton("LINKED", detail: "ONE MIX KNOB", on: !unlinked) { params[.mixUnlink] = 0 }
-                modeButton("UNLINKED", detail: "DRY + WET", on: unlinked) { params[.mixUnlink] = 1 }
-            }
-            HStack(alignment: .top, spacing: 18) {
-                Knob(title: "Dry", value: params.mixerBinding(wet: false), range: 0...100,
-                     defaultValue: unlinked ? Param.dry.defaultValue : 100 - Param.mix.defaultValue,
-                     diameter: knob, minLabel: "0", maxLabel: "100", format: Fmt.pct)
-                    .accessibilityLabel("Dry level")
-                Knob(title: "Wet", value: params.mixerBinding(wet: true), range: 0...100,
-                     defaultValue: unlinked ? Param.wet.defaultValue : Param.mix.defaultValue,
-                     diameter: knob, minLabel: "0", maxLabel: "100", format: Fmt.pct)
-                    .accessibilityLabel("Wet level")
-            }
-            if caption {
-                Text(unlinked
-                     ? "Dry and Wet move on their own. Try 100 % Dry under a heavily driven Wet for bottom-up distortion, or clip gently and blend Dry back for peaks."
-                     : "Mix crossfades: more Wet means less Dry. Unlink to set them separately.")
-                    .font(.footnote)
-                    .foregroundStyle(RCMenuInk.dim)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(12)
-    }
-
-    private func modeButton(_ title: String, detail: String, on: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .tracking(1)
-                    .foregroundStyle(on ? Color.black : RCMenuInk.text)
-                Text(detail)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(on ? Color.black.opacity(0.7) : RCMenuInk.dim)
-            }
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(RoundedRectangle(cornerRadius: 6).fill(on ? RCMenuInk.accent : RCMenuInk.raised))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(on ? RCMenuInk.accent : RCMenuInk.separator, lineWidth: 1))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(on ? [.isSelected] : [])
     }
 }
 

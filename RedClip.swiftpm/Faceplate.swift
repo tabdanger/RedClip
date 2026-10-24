@@ -162,53 +162,39 @@ struct FaceplateView: View {
     /// The Clip Clock panel in the bottom-left corner of the screen's glass (screen units, 258 high).
     private var clipClock: some View {
         let s = L.screen.height / PlateScreen.H, size = ClipClockPanel.size
-        return ClipClockPanel(clock: face.shared.clipClock)
+        return ClipClockPanel(clock: face.shared.clipClock, onReset: face.clipClockReset)
             .scaleEffect(s)
             .helpTarget(.clipClock, face)
             .place(x: L.screen.minX + 60 * s, y: L.screen.minY + 166 * s, w: size.width * s, h: size.height * s)
     }
 
-    // MARK: Knobs (Input, Drive, Ceiling, Mix, Output, Red, Fire)
+    // MARK: Knobs (Input, Drive, Ceiling, Wet, Dry, Output, Red, Fire, Broil)
 
     private var knobs: some View {
         ZStack(alignment: .topLeading) {
             ForEach(L.knobs.indices, id: \.self) { i in
                 let k = L.knobs[i]
                 let box = k.pointerTo * 1.55
-                // MIX turns the Wet level while the parallel mixer is unlinked
-                let p = k.param == .mix && params.mixUnlinked ? Param.wet : k.param
-                PlateKnob(value: params.binding(p), range: p.range, defaultValue: p.defaultValue,
+                let value = knobBinding(k.param)
+                PlateKnob(value: value, range: k.param.range, defaultValue: k.param.defaultValue,
                           capRadius: k.pointerTo, pointerFrom: k.pointerFrom, pointerTo: k.pointerTo,
                           pointerWidth: k.pointerWidth, theme: theme)
                     .helpTarget(k.topic, face)
                     .place(x: k.center.x - box, y: k.center.y - box, w: box * 2, h: box * 2)
-                if k.param == .mix {
-                    mixReadout(k)
-                } else {
-                    PlateValue(text: Self.valueText(k.param, params[k.param]), size: k.valueFont, theme: theme)
-                        .place(k.value)
-                }
+                PlateValue(text: Self.valueText(k.param, value.wrappedValue), size: k.valueFont, theme: theme)
+                    .place(k.value)
             }
         }
     }
 
-    /// The value under MIX opens the parallel mixer (separate Dry and Wet). Unlinked, it shows both levels.
-    private func mixReadout(_ k: PlateLayout.Knob) -> some View {
-        let text = params.mixUnlinked
-            ? String(format: "D %.0f  W %.0f", params[.dry], params[.wet])
-            : Self.valueText(.mix, params[.mix])
-        return Button { face.toggleRCMenu(page: .mixer, anchor: .mixer) } label: {
-            ZStack {
-                Color.clear
-                PlateValue(text: text, size: k.valueFont, theme: theme)
-            }
-            .contentShape(Rectangle())
+    /// Wet and Dry are the parallel mixer's two sides: LINKED they are one crossfade (the Mix
+    /// level, Dry = 100 - Wet), UNLINKED two separate levels.
+    private func knobBinding(_ p: Param) -> Binding<Float> {
+        switch p {
+        case .wet: return params.mixerBinding(wet: true)
+        case .dry: return params.mixerBinding(wet: false)
+        default: return params.binding(p)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open parallel mixer, \(text)")
-        .rcMenuAnchor(.mixer, face: face)
-        .helpTarget(.mixer, face)
-        .place(k.value)
     }
 
     static func valueText(_ p: Param, _ v: Float) -> String {
@@ -219,7 +205,7 @@ struct FaceplateView: View {
         }
     }
 
-    // MARK: Red style / Box Tone / Clip Mode / Oversampling, Unity / Delta / Link / Bypass
+    // MARK: Red style / Linked-Unlinked / Box Tone / Clip Mode / Oversampling, Unity / Delta / Link / Bypass
 
     private var selectors: some View {
         ZStack(alignment: .topLeading) {

@@ -61,7 +61,7 @@ final class ParamStore: ObservableObject {
 
     var mixUnlinked: Bool { self[.mixUnlink] > 0.5 }
 
-    /// One side of the parallel mixer. Linked, both sides move the Mix knob (Dry = 100 - Mix);
+    /// One side of the parallel mixer (the faceplate's Wet and Dry knobs). Linked, both move the Mix level (Dry = 100 - Mix);
     /// unlinked, each side is its own control.
     func mixerBinding(wet: Bool) -> Binding<Float> {
         Binding(get: {
