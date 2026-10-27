@@ -35,16 +35,9 @@ final class FaceModel: ObservableObject {
 
     func stepMeterZoom() { meterZoom = meterZoom.next }
 
-    /// LIVE (the scope) or SONG (the whole song) on the screen. Remembered between launches.
-    /// Only the drawing changes; the audio never notices.
-    private static let screenKey = "RedClip.ScreenMode"
-    @Published var screenMode: ScreenMode = ScreenMode(rawValue: UserDefaults.standard.integer(forKey: FaceModel.screenKey)) ?? .live {
-        didSet { UserDefaults.standard.set(screenMode.rawValue, forKey: Self.screenKey) }
-    }
-    /// The SONG screen's data (SongScreen.swift).
-    let song: SongOverviewStore
-    /// The app's transport, for scrubbing the SONG waveform (nil in a DAW).
-    var songScrub: ((SongScrub) -> Void)?
+    /// The SPECTRUM screen's analyser (Spectrum.swift): this faceplate's own, so every plug-in
+    /// instance analyses its own audio. It only runs while the screen is showing.
+    let spectrum: SpectrumAnalyzer
     private var helpHide: DispatchWorkItem?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?
@@ -64,7 +57,7 @@ final class FaceModel: ObservableObject {
         shared = state
         params = ParamStore(shared: state)
         meters = MeterReader(shared: state)
-        song = SongOverviewStore(shared: state, isPlugin: isPlugin)
+        spectrum = SpectrumAnalyzer(shared: state)
         self.isPlugin = isPlugin
     }
 

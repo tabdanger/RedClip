@@ -27,7 +27,6 @@ struct AppRootView: View {
             }
             .frame(width: total.width, height: total.height, alignment: .topLeading)
             .helpBubbles(face, scale: layout.bubbleScale)
-            .environment(\.plateScale, scale)
             .scaleEffect(scale)
             .frame(width: geo.size.width, height: geo.size.height)
             .redClipPresetMenuHost(face: face, refreshSamples: { audio.refreshSamples() })

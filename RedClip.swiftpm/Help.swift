@@ -15,7 +15,6 @@ enum HelpTopic: String, CaseIterable {
     case clipMode, link, oversampling, bypass
     case play, load, samples, demo, export
     case clipClock
-    case screenMode, songScreen
 
     var title: String {
         switch self {
@@ -26,8 +25,7 @@ enum HelpTopic: String, CaseIterable {
         case .power: return "Power"
         case .inputMeter: return "Input Meter"
         case .outputMeter: return "Output Meter"
-        case .screen:
-            return "The last 120 ms of audio in dBFS. Grey is the signal going into the clipper, red is the clipped output, both lined up in time. The dashed lines are the ceiling, above and below zero: anything grey poking past them is what gets clipped off. Double-tap to zoom."
+        case .screen: return "Spectrum"
         case .clipReadout: return "Clip"
         case .input: return "Input"
         case .drive: return "Drive"
@@ -53,8 +51,6 @@ enum HelpTopic: String, CaseIterable {
         case .demo: return "Demo"
         case .export: return "Export"
         case .clipClock: return "Clip Clock"
-        case .screenMode: return "Live / Song"
-        case .songScreen: return "Song"
         }
     }
 
@@ -71,11 +67,11 @@ enum HelpTopic: String, CaseIterable {
         case .power:
             return "Turns the Red Clip engine off. In a DAW the audio passes straight through untouched and uses no CPU."
         case .inputMeter:
-            return "Level coming in, left and right, after the Input knob. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment. Double-tap it to zoom the screen."
+            return "Level coming in, left and right, after the Input knob. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment."
         case .outputMeter:
-            return "Level going out, left and right. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment. Double-tap it to zoom the screen."
+            return "Level going out, left and right. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment."
         case .screen:
-            return "The last 120 ms of audio in dBFS. Grey is the signal going into the clipper, so turning Input up pushes it toward the dashed ceiling lines; red is the final output. Anything grey past the lines is what gets clipped off. Double-tap the screen or either meter to zoom: +6 to -36, +4 to -24, +2 to -12 dB."
+            return "What the clipper does to the sound, by frequency, live. Grey is the signal going into the clipper (after Input and Drive); red is the clipped signal coming out of it, before Wet / Dry and Output. Both use the same scale, 0 to -72 dBFS, 20 Hz to 20 kHz. Turn Drive up or the Ceiling down and you see the red rise in the highs: that's the harmonics clipping adds. The amber dashed line is the Ceiling, a peak reference: clipping threshold in the time domain; not a per-frequency limit, so the red can sit above it. A small triangle on the top edge marks anything over 0 dBFS. LIVE means audio is coming in; HOLD means it's paused, so the last picture stays. MAX CLIP is the most the clipper has cut since you pressed the arrow."
         case .clipReadout:
             return "How much the clipper is taking off right now, in dB: the biggest cut it makes to any single sample, measured straight across the clipper with the Clip Mode you picked. Hard only starts 3 dB under the ceiling and Classic and Modern bend in softly, so it can read above 0 before the signal reaches the ceiling. Wet / Dry and Output don't change it. 0.0 means nothing is being clipped."
         case .input:
@@ -126,10 +122,6 @@ enum HelpTopic: String, CaseIterable {
             return "Renders the whole file through your current settings to a 24-bit WAV you can save or share."
         case .clipClock:
             return "Finds the spot in the song where Red Clip clips hardest. MAX CLIP is the most the clipper takes off (the same measure as CLIP), MIN:SEC is where it happens. In the app it scans the whole file with your current settings and scans again whenever you change Input, Drive, Ceiling, Red or oversampling. In a DAW it follows playback, so play the song through; the arrow starts a new pass."
-        case .screenMode:
-            return "LIVE shows the last 120 ms as it plays. SONG shows the whole song with a playhead. Switching never touches the sound."
-        case .songScreen:
-            return "The whole song. Grey is the signal going into the clipper, white the final output (after Wet / Dry and Output, so it can cross the lines), red what the clipper cut off, amber the ceiling. Every knob changes the whole picture as you turn it. In the app it covers the whole file; drag across it to move the playhead. In a DAW Red Clip only hears what the host plays, so it fills in as you play, and parts not played yet stay empty. MAX CLIP is the most the clipper has cut since you pressed the arrow."
         }
     }
 }
