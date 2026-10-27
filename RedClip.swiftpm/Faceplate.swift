@@ -66,7 +66,8 @@ struct FaceplateView: View {
                     .allowsHitTesting(false))
                 .helpTarget(.undo, face).place(L.undo)
 
-            // ? help key (works like Console E's: toggle; touch or hover a control for its bubble)
+            // ? help key: switches help mode on (while it is on, the help layer takes the taps,
+            // including the one that switches it off again)
             Button {
                 face.helpEnabled.toggle()
                 if face.helpEnabled { face.showHelp(.help) }
@@ -84,8 +85,7 @@ struct FaceplateView: View {
                 .frame(width: L.help.width, height: L.help.height).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .onHover { inside in if inside { face.showHelp(.help) } else { face.hoverEnded(.help) } }
-            .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [.help: $0] }
+            .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [.help: [$0]] }
             .place(L.help)
 
             // power (lit in the picture); off = dark glass over it
