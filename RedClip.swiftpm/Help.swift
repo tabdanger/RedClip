@@ -2,12 +2,13 @@ import SwiftUI
 
 // MARK: - Help: the "?" button next to Undo
 //
-// The "?" key switches help mode on and off (remembered between launches). While it is lit, one
-// clear layer over the faceplate takes every touch and every trackpad, mouse or Apple Pencil hover:
-// whatever control is under it gets a small bubble explaining what it does, and the control itself
-// is left alone. The bubble fades 3.5 seconds after it appears. Tap "?" again to switch help off.
-// Finding the control from the layer, rather than from gestures on each control, means it works
-// the same on knobs, buttons, meters and the screen, whatever gestures they have of their own.
+// The "?" key switches help pop-ups on and off (remembered between launches). It is not a mode:
+// every knob and button keeps working exactly as usual. While "?" is lit, touching a control, or
+// hovering over it with a trackpad, mouse or Apple Pencil, also pops up a small bubble beside it
+// explaining what it does. The bubble fades 3.5 seconds after it appears.
+// The touches are watched by HelpProbe, which only listens (it never takes a touch away from a
+// control), and the control under the finger is found from the areas each control records with
+// helpTarget, so it works the same on knobs, buttons, meters and the screen.
 //
 // The first time the app opens, a tour (HelpTour) steps through every knob and button using the
 // same bubbles; it can be skipped and never comes back by itself.
@@ -62,7 +63,7 @@ enum HelpTopic: String, CaseIterable {
     var text: String {
         switch self {
         case .help:
-            return "Help mode. While ? is lit, touch or hover over any knob or button and a bubble explains what it does, without changing it. Tap ? again to switch help off and get back to work."
+            return "Help pop-ups. While ? is lit, touching or hovering over any knob or button also pops up what it does; everything keeps working as usual. Tap ? again to switch the pop-ups off."
         case .presets:
             return "Step through the presets with the arrows, or tap the name to pick one from the list."
         case .ab:
@@ -194,7 +195,7 @@ struct HelpAreas {
     }
 }
 
-/// The help mode catcher, the bubble and the tour.
+/// The help watcher, the bubble and the tour.
 struct HelpLayer: View {
     @ObservedObject var face: FaceModel
     let areas: HelpAreas
@@ -209,7 +210,12 @@ struct HelpLayer: View {
             if face.tourStep != nil {
                 HelpTour(face: face, areas: areas, size: size, scale: scale)
             } else {
-                if face.helpEnabled { catcher }
+                if face.helpEnabled {
+                    HelpProbe(onTouch: touch, onHover: hover)
+                        .frame(width: size.width, height: size.height)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
                 bubble.allowsHitTesting(false)
             }
         }
@@ -218,36 +224,22 @@ struct HelpLayer: View {
         .animation(.easeOut(duration: 0.2), value: face.tourStep)
     }
 
-    /// Help mode: takes the touch or hover instead of the control and shows that control's bubble.
-    private var catcher: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { v in
-                        let t = areas.topic(at: v.location)
-                        if t != touched, let old = touched { face.helpTouchEnded(old) }
-                        touched = t
-                        if let t { face.showHelp(t) }
-                    }
-                    .onEnded { v in
-                        if let t = touched { face.helpTouchEnded(t) }
-                        touched = nil
-                        // tapping "?" again switches help mode off
-                        if let r = areas.frame(.help), r.contains(v.location), r.contains(v.startLocation) {
-                            face.helpEnabled = false
-                        }
-                    }
-            )
-            .onContinuousHover { phase in
-                var t: HelpTopic?
-                if case .active(let p) = phase { t = areas.topic(at: p) }
-                guard t != hovered else { return }
-                if let old = hovered { face.hoverEnded(old) }
-                hovered = t
-                if let t { face.showHelp(t) }
-            }
-            .accessibilityHidden(true)
+    /// A finger went down or moved (nil: lifted). Shows the bubble of each new control it lands
+    /// on; holding or turning the same control doesn't bring a faded bubble back.
+    private func touch(_ p: CGPoint?) {
+        let t = face.rcMenuRequest == nil ? p.flatMap { areas.topic(at: $0) } : nil
+        guard t != touched else { return }
+        if let old = touched { face.helpTouchEnded(old) }
+        touched = t
+        if let t { face.showHelp(t) }
+    }
+
+    private func hover(_ p: CGPoint?) {
+        let t = face.rcMenuRequest == nil ? p.flatMap { areas.topic(at: $0) } : nil
+        guard t != hovered else { return }
+        if let old = hovered { face.hoverEnded(old) }
+        hovered = t
+        if let t { face.showHelp(t) }
     }
 
     @ViewBuilder private var bubble: some View {
