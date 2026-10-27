@@ -136,36 +136,14 @@ struct FaceplateView: View {
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { face.stepMeterZoom() }
                 .helpTarget(.outputMeter, face).place(L.meterOut.frame)
-            if face.screenView == .wave {
-                PlateScreen(shared: face.shared, scope: face.meters.scope, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
-                            isPlugin: face.isPlugin, legendX: PlateScreen.legendBesideSwitch)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { face.stepMeterZoom() }
-                    .helpTarget(.screen, face).place(L.screen)
-            } else {
-                PlateSpectrumScreen(analyzer: face.spectrum, shared: face.shared, ceilingDB: params[.ceilingDB],
-                                    bypassed: params[.bypass] > 0.5, isPlugin: face.isPlugin)
-                    .helpTarget(.spectrum, face).place(L.screen)
-            }
+            PlateWaveScreen(shared: face.shared, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
+                            bypassed: params[.bypass] > 0.5, isPlugin: face.isPlugin,
+                            onZoom: { face.stepMeterZoom() })
+                .helpTarget(.screen, face).place(L.screen)
             PlateClipNumber(reader: face.meters, center: CGPoint(x: L.clipNumber.x - L.clip.minX, y: L.clipNumber.y - L.clip.minY),
                             fontSize: L.clipFont)
                 .helpTarget(.clipReadout, face).place(L.clip)
-            if face.screenView == .wave {
-                clipClock
-                loudness
-            }
-            screenSwitch
         }
-    }
-
-    /// WAVE / SPECTRUM in the screen's top-left corner (screen units, 258 high), in both views.
-    private var screenSwitch: some View {
-        let s = L.screen.height / PlateScreen.H, w = ScreenViewSwitch.width, h = ScreenViewSwitch.touchHeight
-        return ScreenViewSwitch(view: $face.screenView)
-            .frame(width: w, height: h, alignment: .topLeading)
-            .scaleEffect(s)
-            .helpTarget(.screenMode, face)
-            .place(x: L.screen.minX + 12 * s, y: L.screen.minY, w: w * s, h: h * s)
     }
 
     /// The meter and the scale printed beside it: double-tapping either steps the screen's zoom,
@@ -177,24 +155,6 @@ struct FaceplateView: View {
             .accessibilityLabel("Zoom the screen, \(face.meterZoom.label)")
             .accessibilityAddTraits(.isButton)
             .place(x: m.frame.minX, y: m.frame.minY, w: m.frame.width * 1.6, h: m.frame.height)
-    }
-
-    /// The Clip Clock panel in the bottom-left corner of the screen's glass (screen units, 258 high).
-    private var clipClock: some View {
-        let s = L.screen.height / PlateScreen.H, size = ClipClockPanel.size
-        return ClipClockPanel(clock: face.shared.clipClock, onReset: face.clipClockReset)
-            .scaleEffect(s)
-            .helpTarget(.clipClock, face)
-            .place(x: L.screen.minX + 60 * s, y: L.screen.minY + 166 * s, w: size.width * s, h: size.height * s)
-    }
-
-    /// Short-term LUFS in and out, in the bottom-right corner of the glass, level with the Clip Clock.
-    private var loudness: some View {
-        let s = L.screen.height / PlateScreen.H, size = LoudnessPanel.size
-        return LoudnessPanel(shared: face.shared)
-            .scaleEffect(s)
-            .helpTarget(.loudness, face)
-            .place(x: L.screen.maxX - (19 + size.width) * s, y: L.screen.minY + 166 * s, w: size.width * s, h: size.height * s)
     }
 
     // MARK: Knobs (Input, Drive, Ceiling, Wet, Dry, Output, Red, Fire, Broil)
@@ -590,168 +550,6 @@ struct PlateMeters: View {
 }
 
 // MARK: - Screen (from the RED CLIP animation pack: live input vs final output)
-
-/// The live scope on the picture's glass, read straight from the audio the engine (or the
-/// host) is processing; nothing here is simulated from knob positions.
-///   - grey: the signal going into the clipper (after Input, Drive and Red), so pushing Input
-///     raises it toward the ceiling; red: the final output (after Mix, Output and Bypass), both
-///     over the same ~120 ms, lined up in time, on the dB scale of the current zoom tier
-///     (MeterZoom: +6 to -36 dBFS by default, mirrored around the centre line);
-///   - each display column shows the min..max of its samples, so transients survive;
-///   - where the clipper took peaks off, the removed part is shaded and the +/- ceiling guide
-///     lights up over it. The guides follow the Ceiling control and mark the clip stage: Mix
-///     and Output can move the final output past them;
-///   - 30 updates a second, suspended while the screen is hidden or the app is inactive;
-///     paused audio freezes it, stopping clears it, silence is a flat line.
-/// All reading happens here on the UI thread (ScopeReader); the audio thread only writes rings.
-struct PlateScreen: View {
-    let shared: SharedState
-    let scope: ScopeReader
-    let ceilingDB: Float
-    var zoom: MeterZoom = .full
-    var isPlugin = false
-    /// Where the INPUT / CLIPPED OUTPUT legend starts: beside the WAVE / SPECTRUM switch on the face.
-    var legendX: CGFloat = 12
-    @Environment(\.scenePhase) private var phase
-    @State private var visible = false
-
-    /// The legend's start with the WAVE / SPECTRUM switch (12 ... 128) in the corner.
-    static let legendBesideSwitch: CGFloat = 12 + ScreenViewSwitch.width + 10
-
-    // Drawn in the scope's own space: 258 high, and as wide as the glass's shape needs
-    // (910 on the iPad face, about 420 on the iPhone face), then scaled onto the glass.
-    // `half`: from the centre line to the top of the zoom range
-    static let H: CGFloat = 258, left: CGFloat = 57, cy: CGFloat = 133, half: CGFloat = 88
-    static let fps = 30.0
-
-    /// In the app, inactive or background pauses it; a plug-in window follows its own visibility.
-    private var live: Bool { visible && (isPlugin || phase == .active) }
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / Self.fps, paused: !live)) { timeline in
-            Canvas { g, size in
-                let s = size.height / Self.H
-                g.scaleBy(x: s, y: s)
-                draw(g, W: size.width / s, frame: timeline.date)
-            }
-        }
-        .onAppear { visible = true }
-        .onDisappear { visible = false }
-        .allowsHitTesting(true)
-    }
-
-    private func draw(_ c: GraphicsContext, W: CGFloat, frame: Date) {
-        let L = Self.left, R = W - 19, cy = Self.cy, k = Self.half
-        c.fill(Path(CGRect(x: 0, y: 0, width: W, height: 258)), with: .color(Color(hex: 0x0b0c0e)))
-        c.fill(Path(CGRect(x: 0, y: 0, width: W, height: 258)),
-               with: .radialGradient(Gradient(colors: [Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0.07),
-                                                       Color(red: 0.627, green: 0.667, blue: 0.725).opacity(0)]),
-                                     center: CGPoint(x: 90, y: 25), startRadius: 1, endRadius: 260))
-        // dB grid + labels: the zoom's marks above and mirrored below, its floor on the centre line
-        func gridLine(_ y: CGFloat, _ label: String, bright: Bool) {
-            var p = Path(); p.move(to: CGPoint(x: L, y: y)); p.addLine(to: CGPoint(x: R, y: y))
-            c.stroke(p, with: .color(bright ? Color(hex: 0x292a2c) : Color(hex: 0x191a1c)), lineWidth: 1)
-            c.draw(Text(label).font(.system(size: 11)).foregroundColor(Color(hex: 0x898d93)),
-                   at: CGPoint(x: 9, y: y), anchor: .leading)
-        }
-        gridLine(cy, String(format: "%.0f", zoom.floorDB), bright: false)
-        for db in zoom.marks {
-            let off = zoom.position(db) * k
-            let label = db > 0 ? String(format: "+%.0f", db) : String(format: "%.0f", db)
-            gridLine(cy - off, label, bright: db == 0)
-            gridLine(cy + off, label, bright: db == 0)
-        }
-        let cols = W > 600 ? 12 : 6
-        for j in 0...cols {
-            let x = L + (R - L) * CGFloat(j) / CGFloat(cols)
-            var p = Path(); p.move(to: CGPoint(x: x, y: 42)); p.addLine(to: CGPoint(x: x, y: 244))
-            c.stroke(p, with: .color(Color(hex: 0x18191b)), lineWidth: 1)
-        }
-        // +/- ceiling guides (clip-stage reference, from the Ceiling control): pulling the
-        // ceiling down moves them toward the waveform, and the zoom scales them with it
-        let ceil = zoom.position(ceilingDB)
-        for sgn: CGFloat in [-1, 1] {
-            var p = Path(); p.move(to: CGPoint(x: L, y: cy - sgn * ceil * k)); p.addLine(to: CGPoint(x: R, y: cy - sgn * ceil * k))
-            c.stroke(p, with: .color(Color(hex: 0x91282b)), style: StrokeStyle(lineWidth: 1, dash: [6, 7]))
-        }
-        // the narrow iPhone glass takes the legend two points smaller, so it clears CEILING
-        let legend: CGFloat = W < 600 && legendX > 12 ? 11 : 13
-        c.draw(Text("INPUT").font(.system(size: legend)).foregroundColor(Color(hex: 0xb3b9c2)), at: CGPoint(x: legendX, y: 15), anchor: .leading)
-        c.draw(Text("CLIPPED OUTPUT").font(.system(size: legend)).foregroundColor(Color(hex: 0xff4145)),
-               at: CGPoint(x: legendX + legend * 5.2, y: 15), anchor: .leading)
-        c.draw(Text(String(format: "CEILING  %.1f dB", ceilingDB)).font(.system(size: legend)).foregroundColor(Color(hex: 0xff4145)),
-               at: CGPoint(x: W - 12, y: 15), anchor: .trailing)
-
-        // the newest ~120 ms, one column per unit of width
-        _ = frame
-        scope.update(shared, columns: Int(R - L))
-        let n = scope.columns
-        let colW = (R - L) / CGFloat(n)
-        @inline(__always) func y(_ v: Float) -> CGFloat { cy - zoom.position(sample: v) * k }
-        @inline(__always) func x(_ i: Int) -> CGFloat { L + (CGFloat(i) + 0.5) * colW }
-
-        /// A min..max band across the columns, at least `thick` tall so a quiet trace still shows.
-        func band(_ lo: [Float], _ hi: [Float], thick: CGFloat) -> Path {
-            var p = Path()
-            for i in 0..<n {
-                let top = min(y(hi[i]), (y(hi[i]) + y(lo[i])) / 2 - thick / 2)
-                if i == 0 { p.move(to: CGPoint(x: L, y: top)) }
-                p.addLine(to: CGPoint(x: x(i), y: top))
-            }
-            for i in stride(from: n - 1, through: 0, by: -1) {
-                let bottom = max(y(lo[i]), (y(hi[i]) + y(lo[i])) / 2 + thick / 2)
-                p.addLine(to: CGPoint(x: x(i), y: bottom))
-                if i == 0 { p.addLine(to: CGPoint(x: L, y: bottom)) }
-            }
-            p.closeSubpath()
-            return p
-        }
-
-        // body of the output (dark red, between the trace and the centre line)
-        var shade = Path()
-        for i in 0..<n {
-            let pt = CGPoint(x: x(i), y: y(max(scope.outMax[i], 0)))
-            if i == 0 { shade.move(to: CGPoint(x: L, y: cy)) }
-            shade.addLine(to: pt)
-        }
-        for i in stride(from: n - 1, through: 0, by: -1) { shade.addLine(to: CGPoint(x: x(i), y: y(min(scope.outMin[i], 0)))) }
-        shade.closeSubpath()
-        c.fill(shade, with: .color(Color(hex: 0x390f13)))
-
-        // into the clipper (grey): Input and Drive push it up toward the ceiling
-        c.fill(band(scope.clipInMin, scope.clipInMax, thick: 2), with: .color(Color(hex: 0x89929f)))
-
-        // what the clipper took off: shaded from its output up to its input, and the guide lit
-        var cut = Path(), lit = Path()
-        let gTop = cy - ceil * k, gBottom = cy + ceil * k
-        for i in 0..<n {
-            let r = scope.removed(i)
-            let x0 = L + CGFloat(i) * colW
-            if r.top > 0.002 {
-                cut.addRect(CGRect(x: x0, y: y(scope.clipInMax[i]), width: colW + 0.5,
-                                   height: max(0, y(scope.clipOutMax[i]) - y(scope.clipInMax[i]))))
-                lit.addRect(CGRect(x: x0, y: gTop - 1.25, width: colW + 0.5, height: 2.5))
-            }
-            if r.bottom > 0.002 {
-                cut.addRect(CGRect(x: x0, y: y(scope.clipOutMin[i]), width: colW + 0.5,
-                                   height: max(0, y(scope.clipInMin[i]) - y(scope.clipOutMin[i]))))
-                lit.addRect(CGRect(x: x0, y: gBottom - 1.25, width: colW + 0.5, height: 2.5))
-            }
-        }
-        c.fill(cut, with: .color(Color(hex: 0xff4145).opacity(0.3)))
-
-        // final output (red)
-        c.fill(band(scope.outMin, scope.outMax, thick: 3), with: .color(Color(hex: 0xff3d42)))
-
-        var glow = c
-        glow.addFilter(.shadow(color: Color(hex: 0xff4145), radius: 4))
-        glow.fill(lit, with: .color(Color(hex: 0xff6a6e)))
-
-        c.draw(Text(zoom.label).font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: 12, y: 242), anchor: .leading)
-        c.draw(Text("120 ms").font(.system(size: 11)).foregroundColor(Color(hex: 0x666b72)), at: CGPoint(x: W - 19, y: 242), anchor: .trailing)
-    }
-}
-
 
 extension Color {
     init(hex: UInt32) {
