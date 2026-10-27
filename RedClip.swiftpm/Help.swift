@@ -129,7 +129,7 @@ enum HelpTopic: String, CaseIterable {
         case .screenMode:
             return "LIVE shows the last 120 ms as it plays. SONG shows the whole song with a playhead. Switching never touches the sound."
         case .songScreen:
-            return "The whole song. Grey is the signal going into the clipper, white the final output (after Wet / Dry and Output, so it can cross the lines), red what the clipper cut off, amber the ceiling. In the app the whole file is analysed with your settings; drag across it to move the playhead. In a DAW Red Clip only hears what the host plays, so it fills in as you play, and parts not played yet stay empty. MAX CLIP is the most the clipper has cut since you pressed the arrow."
+            return "The whole song. Grey is the signal going into the clipper, white the final output (after Wet / Dry and Output, so it can cross the lines), red what the clipper cut off, amber the ceiling. Every knob changes the whole picture as you turn it. In the app it covers the whole file; drag across it to move the playhead. In a DAW Red Clip only hears what the host plays, so it fills in as you play, and parts not played yet stay empty. MAX CLIP is the most the clipper has cut since you pressed the arrow."
         }
     }
 }

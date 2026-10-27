@@ -488,6 +488,7 @@ final class ClipDSP: @unchecked Sendable {
     private var tickFrames = 0, tickStart = -1
     private var tickPreHi: Float = 0, tickPostHi: Float = 0, tickPreLo: Float = 0, tickPostLo: Float = 0
     private var tickOutHi: Float = 0, tickOutLo: Float = 0, tickOver: Float = 1
+    private var tickRawHi: Float = 0, tickRawLo: Float = 0      // the untouched input
     private var tickDelays = 0, tickStamp = 0
 
     init(sampleRate: Double, shared: SharedState) {
@@ -737,6 +738,8 @@ final class ClipDSP: @unchecked Sendable {
                 if tickFrames == 0 { tickStart = timelineFrame + n }
                 tickOutHi = max(tickOutHi, outs.0, outs.1)
                 tickOutLo = min(tickOutLo, outs.0, outs.1)
+                tickRawHi = max(tickRawHi, raws.0, raws.1)
+                tickRawLo = min(tickRawLo, raws.0, raws.1)
                 tickFrames += 1
                 if tickFrames >= CaptureRing.tickFrames { flushTick() }
             }
@@ -852,11 +855,12 @@ final class ClipDSP: @unchecked Sendable {
     /// Hands the summary gathered so far to the capture ring (audio thread; no allocation).
     private func flushTick() {
         shared.capture.push(frame: tickStart, frames: tickFrames, delays: tickDelays, stamp: tickStamp,
-                            preHi: tickPreHi, postHi: tickPostHi, preLo: tickPreLo, postLo: tickPostLo,
+                            rawHi: tickRawHi, rawLo: tickRawLo, preHi: tickPreHi, postHi: tickPostHi, preLo: tickPreLo, postLo: tickPostLo,
                             outHi: tickOutHi, outLo: tickOutLo, reductionDB: gainToDB(tickOver))
         tickFrames = 0
         tickPreHi = 0; tickPostHi = 0; tickPreLo = 0; tickPostLo = 0
         tickOutHi = 0; tickOutLo = 0; tickOver = 1
+        tickRawHi = 0; tickRawLo = 0
     }
 
     /// Clears filter memory (used before an offline export).

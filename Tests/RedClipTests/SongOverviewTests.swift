@@ -124,7 +124,7 @@ final class SongOverviewTests: XCTestCase {
         let cols = o.columns(100, timeline: song.frames, current: stamp(set))   // 50 ms per column
         let c = dbToGain(-6)
         XCTAssertFalse(cols.state.contains(.unknown), "the whole file is analysed")
-        XCTAssertFalse(cols.state.contains(.stale))
+        XCTAssertTrue(cols.state.allSatisfy { $0 == .exact }, "drawn from the exact pass")
         for i in 0..<100 {
             let t = Double(i) * 0.05
             if t < 1.9 || t > 3.1 {
@@ -159,15 +159,59 @@ final class SongOverviewTests: XCTestCase {
         XCTAssertNil(SongAnalyzer.source(song.audio(sr), stop: { true }))
     }
 
-    func testOtherSettingsShowAsStale() throws {
+    private func model(_ values: [Float]) -> SongModel {
+        let state = SharedState(captureCapacity: 64)
+        for (i, v) in values.enumerated() { state.params[i] = v }
+        return SongModel(state.params)
+    }
+
+    func testAKnobMoveRedrawsLiveWithTheNewSettings() throws {
         let song = Song(seconds: 4, sr: sr, burst: 0.9)
-        let a = settings([.ceilingDB: -6]), b = settings([.ceilingDB: -9])
+        let a = settings([.ceilingDB: -6]), b = settings([.ceilingDB: -12, .outputDB: -3])
         XCTAssertNotEqual(stamp(a), stamp(b))
         XCTAssertEqual(stamp(a), stamp(settings([.ceilingDB: -6, .link: 1])), "Link alone doesn't change the picture")
         let o = try XCTUnwrap(SongAnalyzer.preview(song.audio(sr), settings: a, stop: { false }))
-        let cols = o.columns(80, timeline: song.frames, current: stamp(b))
-        XCTAssertFalse(cols.state.contains(.current))
-        XCTAssertTrue(cols.state.contains(.stale))
+        // the knobs moved after the exact pass: every column follows them through the model
+        let cols = o.columns(80, timeline: song.frames, current: stamp(b), model: model(b))
+        XCTAssertTrue(cols.state.allSatisfy { $0 == .live })
+        let c = dbToGain(-12)
+        for i in 0..<80 where Double(i) * 0.05 > 2.1 && Double(i) * 0.05 < 2.9 {
+            XCTAssertEqual(cols.preHi[i], 0.9, accuracy: 0.01)
+            XCTAssertLessThanOrEqual(cols.postHi[i], c * 1.0001, "the new ceiling")
+            XCTAssertEqual(cols.outHi[i], cols.postHi[i] * dbToGain(-3), accuracy: 1e-4, "the new Output")
+        }
+    }
+
+    func testTheLiveModelMatchesTheExactPass() throws {
+        let song = Song(seconds: 4, sr: sr, burst: 0.9)
+        for extra: [Param: Float] in [[:], [.clipMode: 0], [.clipMode: 1, .gold: 60], [.mixUnlink: 1, .dry: 40, .wet: 100],
+                                      [.broil: 50, .outputDB: 2]] {
+            var s: [Param: Float] = [.ceilingDB: -9, .oversampling: 0]
+            for (k, v) in extra { s[k] = v }
+            let set = settings(s)
+            let o = try XCTUnwrap(SongAnalyzer.preview(song.audio(sr), settings: set, stop: { false }))
+            let src = try XCTUnwrap(SongAnalyzer.source(song.audio(sr), stop: { false }))
+            o.setSource(hi: src.hi, lo: src.lo)
+            let exact = o.columns(40, timeline: song.frames, current: stamp(set))
+            let live = o.columns(40, timeline: song.frames, current: SongStamp.mixed, model: model(set))
+            for i in 0..<40 where Double(i) * 0.1 > 2.1 && Double(i) * 0.1 < 2.9 {
+                XCTAssertEqual(live.preHi[i], exact.preHi[i], accuracy: 0.01, "\(extra) into the clipper")
+                XCTAssertEqual(live.postHi[i], exact.postHi[i], accuracy: 0.01, "\(extra) out of the clipper")
+                XCTAssertEqual(live.outHi[i], exact.outHi[i], accuracy: 0.02, "\(extra) output")
+            }
+        }
+    }
+
+    func testModelStages() {
+        let base = settings([.ceilingDB: -6])
+        let c = dbToGain(-6)
+        let m = model(base)
+        XCTAssertEqual(m.layers(0.1).post, 0.1, accuracy: 1e-6, "quiet material untouched")
+        XCTAssertEqual(m.layers(2).post, Curves.clip(2, ceiling: c, knee: Curves.knee(2)), accuracy: 1e-6)
+        XCTAssertEqual(m.layers(-2).out, -m.layers(2).out, accuracy: 1e-6)
+        XCTAssertEqual(model(settings([.ceilingDB: -6, .bypass: 1])).layers(2).out, 2, "bypass is the input")
+        XCTAssertEqual(model(settings([.ceilingDB: -6, .driveDB: 6])).layers(0.3).pre, 0.3 * dbToGain(6), accuracy: 1e-5)
+        XCTAssertEqual(m.layers(.nan).out, 0)
     }
 
     func testSourceOverviewKeepsShortPeaks() throws {
@@ -188,7 +232,7 @@ final class SongOverviewTests: XCTestCase {
     private func record(_ frame: Int, _ frames: Int = 64, stamp: Int = 5, clipDelay: Int = 0, outDelay: Int = 0,
                         pre: Float = 0.5, post: Float = 0.4, out: Float = 0.3) -> CaptureRecord {
         CaptureRecord(frame: frame, frames: frames, clipDelay: clipDelay, outDelay: outDelay, stamp: stamp,
-                      preHi: pre, postHi: post, preLo: -pre, postLo: -post, outHi: out, outLo: -out, reductionDB: 1)
+                      rawHi: pre / 2, rawLo: -pre / 2, preHi: pre, postHi: post, preLo: -pre, postLo: -post, outHi: out, outLo: -out, reductionDB: 1)
     }
 
     func testLayersLandWhereTheirAudioCameFrom() {
@@ -213,7 +257,7 @@ final class SongOverviewTests: XCTestCase {
         XCTAssertEqual(cols.preHi.max() ?? 0, 0.9)
         XCTAssertTrue(cols.preHi.contains(0.7))
         XCTAssertTrue(cols.state.contains(.unknown), "nothing invented between the two")
-        XCTAssertEqual(cols.state.filter { $0 == .current }.count, 2)
+        XCTAssertEqual(cols.state.filter { $0 == .exact }.count, 2)
     }
 
     func testNewSettingsReplaceOldAudioInTheirBins() {
@@ -222,13 +266,13 @@ final class SongOverviewTests: XCTestCase {
         o.add(record(0, stamp: 7, pre: 0.4))
         let cols = o.columns(10, timeline: 48_000, current: 7)
         XCTAssertEqual(cols.preHi[0], 0.4)
-        XCTAssertEqual(cols.state[0], .current)
+        XCTAssertEqual(cols.state[0], .exact)
     }
 
     func testRingReaderDropsWhatItFellBehindOn() {
         let ring = CaptureRing(capacity: 64)
         for i in 0..<200 {
-            ring.push(frame: i * 64, frames: 64, delays: 0, stamp: 3, preHi: 0, postHi: 0, preLo: 0, postLo: 0,
+            ring.push(frame: i * 64, frames: 64, delays: 0, stamp: 3, rawHi: 0, rawLo: 0, preHi: 0, postHi: 0, preLo: 0, postLo: 0,
                       outHi: 0, outLo: 0, reductionDB: 0)
         }
         var cursor = 0
@@ -275,6 +319,7 @@ final class SongCapturePluginTests: XCTestCase {
         let stampNow = SongStamp.of(h.shared.params)
         XCTAssertTrue(records.allSatisfy { $0.stamp == stampNow })
         XCTAssertGreaterThan(records.map(\.reductionDB).max() ?? 0, 1, "Drive 9 dB clips the test tones")
+        XCTAssertGreaterThan(records.map(\.rawHi).max() ?? 0, 0.5, "the untouched input rides along for the live view")
         XCTAssertTrue(records.allSatisfy { $0.postHi <= dbToGain(h.shared[.ceilingDB]) + 1e-4 })
     }
 

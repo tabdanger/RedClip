@@ -144,7 +144,7 @@ struct FaceplateView: View {
                     .helpTarget(.screen, face).place(L.screen)
             } else {
                 PlateSongScreen(store: face.song, shared: face.shared, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
-                                isPlugin: face.isPlugin, scrub: face.songScrub)
+                                isPlugin: face.isPlugin, scrub: face.songScrub, settings: SongStamp.of(face.shared.params))
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) { face.stepMeterZoom() }
                     .helpTarget(.songScreen, face).place(L.screen)
