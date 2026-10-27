@@ -77,7 +77,7 @@ enum HelpTopic: String, CaseIterable {
         case .outputMeter:
             return "Level going out, left and right. The bar shows the average (RMS) level; the pink marker holds the last peak for a moment. Double-tap it to zoom the waveform."
         case .screen:
-            return "The last few seconds as they play, in dBFS, like Gold Clip's display. Grey is the signal going into the clipper (after Input and Drive), white is the clipped signal coming out of it (before Wet / Dry and Output), and red marks where the clipper is cutting. The amber line and the needle on the right are the Ceiling. The red marker is where the biggest clip since the last reset happened; turning a knob that changes the clipping, or loading new audio, starts a new count. Double-tap the scale or either meter to zoom: +6 to -36, +4 to -24, +2 to -12 dBFS."
+            return "The last few seconds as they play, in dBFS, like Gold Clip's display. Grey is your original audio, before Input, Drive or anything else. Red sits on top of it and shows how much the clipper is taking off: the thicker the red, the more dB are being clipped. White is the final output you hear. Tap INPUT, CLIPPED or OUTPUT at the top to show or hide each layer. The amber line and the needle on the right are the Ceiling. The red marker is the CLIP CLOCK point, the loudest moment of the original; in the app, tap the CLIP CLOCK time to jump playback straight there. Double-tap the scale or either meter to zoom: +6 to -36, +4 to -24, +2 to -12 dBFS."
         case .clipReadout:
             return "How much the clipper is taking off right now, in dB: the biggest cut it makes to any single sample, measured straight across the clipper with the Clip Mode you picked. Hard only starts 3 dB under the ceiling and Classic and Modern bend in softly, so it can read above 0 before the signal reaches the ceiling. Wet / Dry and Output don't change it. 0.0 means nothing is being clipped."
         case .input:
@@ -117,7 +117,7 @@ enum HelpTopic: String, CaseIterable {
         case .bypass:
             return "Switches the processing out so you hear the original. A quick before-and-after check."
         case .play:
-            return "Plays or stops the loaded audio through Red Clip. It loops until you stop it."
+            return "Plays or stops the loaded audio through Red Clip. It loops until you stop it. Drag along the bar underneath to move through the song; slide your finger up away from the bar while dragging for half, quarter and fine speed, and the bubble shows the exact time. The red marks are the loudest moments of the song, the tall one with the triangle is the CLIP CLOCK, and the dot snaps onto a mark when you drag close to it."
         case .load:
             return "Opens the Files app to pick any audio file. It gets copied into your Red Clip Samples folder."
         case .samples:
@@ -127,7 +127,7 @@ enum HelpTopic: String, CaseIterable {
         case .export:
             return "Renders the whole file through your current settings to a 24-bit WAV you can save or share."
         case .clipClock:
-            return "The loudest point of your original audio and when it happens, measured before Input, Drive or any other control, so turning knobs never changes or restarts it. In the app it reads the whole file the moment it loads. In a DAW it follows playback, so play the song through; the arrow starts a new pass."
+            return "The loudest point of your original audio and when it happens, measured before Input, Drive or any other control, so turning knobs never changes or restarts it. In the app it reads the whole file the moment it loads; tap the time to jump playback there. In a DAW it follows playback, so play the song through; the arrow starts a new pass."
         }
     }
 }

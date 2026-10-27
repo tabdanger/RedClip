@@ -1,6 +1,6 @@
 import XCTest
 
-// The WAVEFORM screen: what the two taps carry, that the layers line up in time, the MAX CLIP
+// The WAVEFORM screen: what the two taps carry (the original input, the final output), that the layers line up in time, the MAX CLIP
 // position and its marker, when MAX CLIP starts over, and the reduction to display columns.
 
 final class WaveTapTests: XCTestCase {
@@ -35,17 +35,18 @@ final class WaveTapTests: XCTestCase {
         XCTAssertEqual(shared.wave.written.acquire(), 0)
     }
 
-    func testTicksCarryInputAfterDriveAndOutputBeforeTheMix() {
+    func testTicksCarryTheOriginalInputAndTheFinalOutput() {
         let (shared, dsp) = make([.oversampling: 0, .inputDB: 6, .driveDB: 6, .ceilingDB: 0, .mix: 30, .outputDB: -12])
         let x = (0..<(64 * 200)).map { 0.01 * Float(sin(Double($0) * 0.3)) }
         run(dsp, x, block: 128)
         let f = shared.wave
         XCTAssertEqual(f.written.acquire(), 200)
         let last = 199 & WaveFeed.mask
-        let g = dbToGain(12)
         XCTAssertEqual(f.frames[last], WaveFeed.tickFrames)
-        XCTAssertEqual(f.inPeak[last], 0.01 * g, accuracy: 0.002, "input tap = input x Input x Drive")
-        XCTAssertEqual(f.outPeak[last], 0.01 * g, accuracy: 0.002, "output tap is before Wet / Dry and Output")
+        XCTAssertEqual(f.inPeak[last], 0.01, accuracy: 0.0005, "grey = the original audio, before Input and Drive")
+        // white = what you hear: 30 % wet (after Input and Drive) + 70 % dry (after Input), then Output
+        let heard = 0.01 * (0.3 * dbToGain(12) + 0.7 * dbToGain(6)) * dbToGain(-12)
+        XCTAssertEqual(f.outPeak[last], heard, accuracy: 0.0005, "white = the final output, after Wet / Dry and Output")
         XCTAssertEqual(f.clip[last], 0, accuracy: 1e-6, "nothing clipped")
     }
 
@@ -202,5 +203,49 @@ final class WaveColumnTests: XCTestCase {
         XCTAssertEqual(WaveTime.tenths(44.25), "0:44.2")
         XCTAssertEqual(WaveTime.tenths(127), "2:07.0")
         XCTAssertEqual(WaveTime.dBFS(-9.6), "\u{2212}9.6")
+    }
+}
+
+final class ScrubTests: XCTestCase {
+    func testLoudestMomentsComeLoudestFirstAndSpacedApart() {
+        let sr = 1000.0
+        var x = [Float](repeating: 0.1, count: 10_000)
+        x[2000] = 0.5
+        x[2300] = 0.9                               // the file's peak
+        x[2600] = 0.8                               // too close to it to count separately
+        x[7000] = -0.7
+        let pts = x.withUnsafeBufferPointer {
+            ClipPoint.loudest(left: $0.baseAddress!, right: $0.baseAddress!, frames: x.count, sampleRate: sr, count: 3)
+        }
+        XCTAssertEqual(pts.map(\.frame), [2300, 7000, 0])
+        XCTAssertEqual(pts.map(\.rank), [0, 1, 2])
+        XCTAssertEqual(pts[0].fraction, 0.23, accuracy: 1e-9)
+        XCTAssertEqual(pts[0].db, gainToDB(0.9), accuracy: 0.01)
+        let peak = x.withUnsafeBufferPointer { SharedState.filePeak(left: $0.baseAddress!, right: $0.baseAddress!, frames: x.count) }
+        XCTAssertEqual(pts[0].frame, peak.frame, "the tallest mark is the CLIP CLOCK sample")
+    }
+
+    func testEmptyFileHasNoMarks() {
+        let x: [Float] = [0]
+        let pts = x.withUnsafeBufferPointer {
+            ClipPoint.loudest(left: $0.baseAddress!, right: $0.baseAddress!, frames: 0, sampleRate: 48_000)
+        }
+        XCTAssertTrue(pts.isEmpty)
+    }
+
+    func testFingerFurtherFromTheBarScrubsFiner() {
+        XCTAssertEqual(ScrubMath.speed(distance: 10), 1)
+        XCTAssertEqual(ScrubMath.speed(distance: 60), 0.5)
+        XCTAssertEqual(ScrubMath.speed(distance: 100), 0.25)
+        XCTAssertEqual(ScrubMath.speed(distance: 300), 0.1)
+        XCTAssertEqual(ScrubMath.speedName(1), "")
+        XCTAssertEqual(ScrubMath.speedName(0.1), "FINE")
+    }
+
+    func testTheDotSnapsOntoANearbyMarkOnly() {
+        let pts = [ClipPoint(frame: 500, fraction: 0.5, db: -1, rank: 0)]
+        XCTAssertEqual(ScrubMath.snap(0.505, to: pts, reach: 0.01), 0.5)
+        XCTAssertEqual(ScrubMath.snap(0.52, to: pts, reach: 0.01), 0.52)
+        XCTAssertEqual(ScrubMath.snap(0.3, to: [], reach: 0.01), 0.3)
     }
 }

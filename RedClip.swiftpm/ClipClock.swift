@@ -6,6 +6,65 @@ import SwiftUI
 // original audio's loudest sample and where it is, before any control. This older panel and its
 // state are no longer shown anywhere; ClipDSP still fills ClipClockState from songTime in a DAW.
 
+/// One of a file's loudest moments, for the scrub bar's highlights.
+struct ClipPoint: Identifiable, Equatable {
+    let frame: Int
+    let fraction: Double      // frame / file length
+    let db: Float             // the original audio's sample peak there, dBFS
+    let rank: Int             // 0 = the loudest (the CLIP CLOCK sample)
+    var id: Int { frame }
+
+    /// The `count` loudest moments of the original audio, at least `spacing` seconds apart,
+    /// loudest first. The first is the file's loudest sample (the same one SharedState.filePeak
+    /// finds). Off the audio thread; one pass over the file.
+    static func loudest(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frames: Int,
+                        sampleRate: Double, count: Int = 5, spacing: Double = 1) -> [ClipPoint] {
+        guard frames > 0 else { return [] }
+        let block = max(1, Int(sampleRate * 0.05))           // 50 ms
+        var peaks: [(peak: Float, frame: Int)] = []
+        peaks.reserveCapacity(frames / block + 1)
+        var start = 0
+        while start < frames {
+            let end = min(frames, start + block)
+            var p: Float = 0, at = start
+            for i in start..<end {
+                let a = max(abs(left[i]), abs(right[i]))
+                if a > p && a.isFinite { p = a; at = i }
+            }
+            if p > 0 { peaks.append((p, at)) }
+            start = end
+        }
+        peaks.sort { $0.peak != $1.peak ? $0.peak > $1.peak : $0.frame < $1.frame }
+        let gap = Int(sampleRate * spacing)
+        var chosen: [(peak: Float, frame: Int)] = []
+        for p in peaks where chosen.count < count {
+            if chosen.allSatisfy({ abs($0.frame - p.frame) >= gap }) { chosen.append(p) }
+        }
+        return chosen.enumerated().map { i, p in
+            ClipPoint(frame: p.frame, fraction: Double(p.frame) / Double(frames), db: gainToDB(p.peak), rank: i)
+        }
+    }
+}
+
+/// The scrub bar's arithmetic (Scrubber.swift is app-only).
+enum ScrubMath {
+    /// Scrub speed for how far (in this view's units) the finger is from the bar.
+    static func speed(distance: CGFloat) -> Double {
+        distance < 40 ? 1 : (distance < 80 ? 0.5 : (distance < 120 ? 0.25 : 0.1))
+    }
+
+    static func speedName(_ s: Double) -> String {
+        s >= 1 ? "" : (s >= 0.5 ? "HALF SPEED" : (s >= 0.25 ? "QUARTER SPEED" : "FINE"))
+    }
+
+    /// Where `fraction` lands after snapping onto a mark within `reach` (fractions of the bar).
+    static func snap(_ fraction: Double, to points: [ClipPoint], reach: Double) -> Double {
+        let near = points.min { abs($0.fraction - fraction) < abs($1.fraction - fraction) }
+        if let near, abs(near.fraction - fraction) <= reach { return near.fraction }
+        return fraction
+    }
+}
+
 /// Shared between the audio thread and the UI (lock-free, allocated once).
 final class ClipClockState: @unchecked Sendable {
     let maxDB = AtomicFloat(0)        // dB past the ceiling; 0 = nothing clipped since the reset

@@ -94,7 +94,7 @@ def main():
     # Each target's own copy of the Swift files and resources (see project.yml).
     package_dir = os.path.join(ROOT, "RedClip.swiftpm")
     # The plug-in has no app entry point, transport/player or sample library (the host plays the audio).
-    app_only = {"RedClipApp.swift", "AppRootView.swift", "AudioController.swift", "SampleLibrary.swift"}
+    app_only = {"RedClipApp.swift", "AppRootView.swift", "AudioController.swift", "SampleLibrary.swift", "Scrubber.swift"}
     for target, skip in (("app", set()), ("plugin", app_only), ("tests", app_only)):
         sources = os.path.join(OUT, target, "Sources")
         resources = os.path.join(OUT, target, "Resources")

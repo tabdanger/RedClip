@@ -720,13 +720,15 @@ final class ClipDSP: @unchecked Sendable {
         let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy), gBroil = ramps(.broil)
         let ks = smooth
         var ringPos = shared.ringTotal.value          // only this thread writes it
-        // WAVEFORM taps (WaveScreen.swift), gathered only while the screen shows them. The wet
-        // branch comes out of the oversampling filters tapDelay frames after the input went in,
-        // and the clip stage sits overDelay frames ahead of it, so both are held back that many
-        // frames (inDelay / overDelay) to line up with the output. The audio is not delayed.
+        // WAVEFORM taps (WaveScreen.swift), gathered only while the screen shows them: the
+        // original input, the clipper's gain reduction and the final output. The output comes
+        // out of the oversampling filters tapDelay frames after the input went in (none when
+        // fully bypassed: then it is the input itself), and the clip stage sits overLag frames
+        // ahead of it, so the input and clip copies are held back that many frames (inDelay /
+        // overDelay) to line up with the output. The audio is not delayed.
         let feed = shared.wave
         let tapOn = feed.on.value != 0
-        let tapDelay = factor == 1 ? 0 : (factor == 2 ? 4 : 5)
+        let tapDelay = factor == 1 || tBypass > 0.5 ? 0 : (factor == 2 ? 4 : 5)
         let overLag = factor == 1 ? 0 : 2
         let onTimeline = timelineFrame >= 0
 
@@ -763,7 +765,6 @@ final class ClipDSP: @unchecked Sendable {
             var raws: (Float, Float) = (0, 0)
             var bigPre: Float = 0, bigPost: Float = 0       // clip stage, the channel hit harder
             var xs: (Float, Float) = (0, 0), outs: (Float, Float) = (0, 0)
-            var taps: (Float, Float) = (0, 0), wets: (Float, Float) = (0, 0)   // WAVEFORM input / output
             frameOver = 1
 
             for chIdx in 0..<2 {
@@ -774,7 +775,6 @@ final class ClipDSP: @unchecked Sendable {
                 let ax = abs(x)
                 if chIdx == 0 { inPeak.0 = max(inPeak.0, ax) } else { inPeak.1 = max(inPeak.1, ax) }
                 let xd = x * sDrive               // drive pushes into the clipper only
-                if chIdx == 0 { taps.0 = xd } else { taps.1 = xd }    // WAVEFORM INPUT tap
 
                 // --- oversampled nonlinear section ---
                 var wet: Float = 0, ref: Float = 0
@@ -799,7 +799,6 @@ final class ClipDSP: @unchecked Sendable {
 
                 // anti-overshoot: filter ringing after downsampling can't poke past the ceiling
                 wet = min(max(wet, -c), c)
-                if chIdx == 0 { wets.0 = wet } else { wets.1 = wet }  // WAVEFORM OUTPUT tap (before Wet / Dry)
 
                 var out: Float
                 if delta {
@@ -844,9 +843,9 @@ final class ClipDSP: @unchecked Sendable {
             }
 
             if tapOn {
-                // line the input and the clip stage up with the wet output
+                // line the original input and the clip stage up with the final output
                 let slot = processed & 7
-                inDelay[slot] = max(abs(taps.0), abs(taps.1))
+                inDelay[slot] = max(abs(raws.0), abs(raws.1))
                 overDelay[slot] = frameOver
                 let inMag = inDelay[(processed &- tapDelay) & 7]
                 let over = overDelay[(processed &- overLag) & 7]
@@ -856,8 +855,8 @@ final class ClipDSP: @unchecked Sendable {
                     waveClock = onTimeline ? timelineClock : SongClock.relative.rawValue
                 }
                 waveIn = max(waveIn, inMag)
-                waveOut = max(waveOut, abs(wets.0), abs(wets.1))
-                waveSq += (wets.0 * wets.0 + wets.1 * wets.1) * 0.5
+                waveOut = max(waveOut, abs(outs.0), abs(outs.1))
+                waveSq += (outs.0 * outs.0 + outs.1 * outs.1) * 0.5
                 waveOver = max(waveOver, over)
                 if processed == markAt { waveMark = markSerial }
                 waveFrames += 1

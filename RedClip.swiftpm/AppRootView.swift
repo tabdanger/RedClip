@@ -81,30 +81,10 @@ struct AppRootView: View {
                 .frame(width: T.fileName.width, alignment: .leading)
                 .place(T.fileName)
 
-            // progress along the picture's groove; drag to seek (quiet until you let go)
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
-                GeometryReader { geo in
-                    let w = geo.size.width
-                    let p = CGFloat(audio.progress)
-                    let dot = T.font * 0.7
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Plate.glow.opacity(0.85)).frame(width: max(3, p * w), height: 3)
-                            .shadow(color: Plate.glow, radius: 3)
-                        Circle().fill(Plate.glow).frame(width: dot, height: dot)
-                            .shadow(color: Plate.glow, radius: 5)
-                            .offset(x: max(0, p * w - dot / 2))
-                    }
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0)
-                        .onChanged { g in
-                            audio.beginScrub()          // silent while dragging
-                            audio.seek(to: Double(min(max(g.location.x / w, 0), 1)))
-                        }
-                        .onEnded { _ in audio.endScrub() })
-                }
-            }
-            .place(T.progress)
+            // the scrub bar along the picture's groove: drag (slide up for finer control) to seek,
+            // quiet until you let go; red marks are the loudest moments, the tall one the CLIP CLOCK
+            PrecisionScrubber(audio: audio, fontSize: T.font)
+                .place(T.progress)
 
             Group {
                 if audio.isBusy {
