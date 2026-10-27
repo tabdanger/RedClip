@@ -208,6 +208,7 @@ final class AudioController: ObservableObject {
         shared.songFrame.value = 0
         shared.songTotal.value = b.frames
         shared.songClock.value = SongClock.file.rawValue
+        shared.resetClipMax()                          // MAX CLIP belongs to the new audio only
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
         let node = AudioController.makeSourceNode(format: fmt, buffer: b, dsp: dsp, playhead: ph, playFlag: flag, seek: seek,
@@ -259,6 +260,7 @@ final class AudioController: ObservableObject {
             }
             while done < total {
                 let n = min(total - done, chunk, b.frames - pos)
+                dsp.timelineFrame = pos              // this chunk's first frame in the file (a chunk never wraps)
                 for i in 0..<n {
                     sL[i] = b.left[pos]; sR[i] = b.right[pos]
                     pos += 1

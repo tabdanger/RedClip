@@ -68,7 +68,7 @@ final class SharedState: @unchecked Sendable {
     let power: AtomicInt         // 0 = power button off (plug-in passes audio through untouched)
     let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
     let clipClock = ClipClockState()   // biggest clip and where in the song it happened (ClipClock.swift)
-    let spectrum = SpectrumFeed()      // the SPECTRUM screen's sample copies (Spectrum.swift)
+    let wave = WaveFeed()              // the WAVEFORM screen's envelope history (WaveScreen.swift)
 
     // SONG view (SongOverview.swift). The audio thread summarises the clip stage and the final
     // output into `capture` every 64 frames, stamped with the timeline position; the UI folds
@@ -81,6 +81,12 @@ final class SharedState: @unchecked Sendable {
     let songClock: AtomicInt           // SongClock raw value: where songFrame comes from
     let clipMaxDB: AtomicFloat         // MAX CLIP: most gain the clipper took off since the reset, dB
     let clipMaxReset: AtomicInt        // UI sets 1, the audio thread takes it
+    // where the MAX CLIP sample was: its position on the timeline it came from (SongClock in
+    // clipMaxClock; -1 = none yet). clipMaxSerial is published last, after the three values,
+    // and changes with every new maximum and every reset, so a reader can tell a set apart.
+    let clipMaxFrame = AtomicInt(-1)
+    let clipMaxClock = AtomicInt(0)
+    let clipMaxSerial = AtomicInt(0)
     let songEpoch: AtomicInt           // bumped when the song starts over (plug-in: new render session)
 
     // Sample rings for the screen (oscilloscope) and the LED meters. The audio thread writes one
@@ -136,12 +142,22 @@ final class SharedState: @unchecked Sendable {
         ringTotal.deallocate(); sampleRate.deallocate()
         captureOn.deallocate(); songFrame.deallocate(); songMoving.deallocate(); songTotal.deallocate()
         songClock.deallocate(); clipMaxDB.deallocate(); clipMaxReset.deallocate(); songEpoch.deallocate()
+        clipMaxFrame.deallocate(); clipMaxClock.deallocate(); clipMaxSerial.deallocate()
     }
 
     /// MAX CLIP reset (any thread): the readout clears now, the audio thread its own best next block.
     func resetClipMax() {
         clipMaxReset.value = 1
         clipMaxDB.value = 0
+    }
+
+    /// The MAX CLIP set as one consistent snapshot (UI): nil while the audio thread is mid-update.
+    func clipMax() -> (db: Float, frame: Int, clock: SongClock, serial: Int)? {
+        let serial = clipMaxSerial.acquire()
+        let db = clipMaxDB.value, frame = clipMaxFrame.value
+        let clock = SongClock(rawValue: clipMaxClock.value) ?? .none
+        guard clipMaxSerial.acquire() == serial else { return nil }
+        return (db, frame, clock, serial)
     }
 
     subscript(p: Param) -> Float {
@@ -457,6 +473,12 @@ final class ClipDSP: @unchecked Sendable {
     /// so none of those change it.
     private var clipOver: Float = 1
     private var clipBest: Float = 0   // MAX CLIP (dB) since the last reset
+    private var clipBestRatio: Float = 1                // the same, as |pre| / |post|
+    private var clipBestFrame = -1, clipBestClock = 0   // where it happened
+    private var clipSerial = 0
+    private var clipSettings: UInt64 = 0                // what the clipper was set to (clipSettingsHash)
+    /// Largest |pre| / |post| of the current frame (both channels, every oversampled sample).
+    private var frameOver: Float = 1
 
     /// Clip Clock: song position (seconds) of this block's first sample, set by whoever calls
     /// process() (the app's playhead, the host's transport). Negative: not playing, don't record.
@@ -482,6 +504,18 @@ final class ClipDSP: @unchecked Sendable {
     /// frame in the app, the host's sample position in a DAW); -1 = not on a timeline (transport
     /// stopped), so nothing is captured. Set by whoever calls process().
     var timelineFrame: Int = -1
+    /// Which clock timelineFrame comes from (SongClock raw value): the file or the host.
+    var timelineClock: Int = SongClock.file.rawValue
+
+    // WAVEFORM envelope (WaveFeed): frames processed since this DSP started (the elapsed-analysis
+    // clock when there is no timeline), short delay lines that line the input and the clip stage
+    // up with the wet output, and the tick being gathered
+    private var processed = 0
+    private let inDelay = UnsafeMutablePointer<Float>.allocate(capacity: 8)
+    private let overDelay = UnsafeMutablePointer<Float>.allocate(capacity: 8)
+    private var waveFrames = 0, waveFrame = -1, waveClock = 0
+    private var waveIn: Float = 0, waveOut: Float = 0, waveSq: Float = 0, waveOver: Float = 1
+    private var waveMark = 0, markAt = -1, markSerial = 0
     // the summary being gathered (see CaptureRing): the clipper's most positive and most
     // negative input, each with what the clipper made of that same sample, the final output's
     // extremes and the largest gain reduction
@@ -499,6 +533,8 @@ final class ClipDSP: @unchecked Sendable {
         lufsBlock = max(1, Int((sampleRate / 10).rounded()))
         colSamples = max(1, Int((sampleRate / 100).rounded()))
         shared.sampleRate.value = Float(sampleRate)
+        inDelay.initialize(repeating: 0, count: 8)
+        overDelay.initialize(repeating: 1, count: 8)
         shared.waveRate.value = Float(sampleRate / Double(max(1, Int((sampleRate / 100).rounded()))))
 
         var a: [Float] = []
@@ -535,7 +571,7 @@ final class ClipDSP: @unchecked Sendable {
         return (mix, 1 - mix, .mix, .mix)
     }
 
-    deinit { osCoeffs.deallocate() }
+    deinit { osCoeffs.deallocate(); inDelay.deallocate(); overDelay.deallocate() }
 
     private func configureOversampling(_ idx: Int) {
         curOS = idx
@@ -612,10 +648,20 @@ final class ClipDSP: @unchecked Sendable {
         }
         var clockOver: Float = 1, clockAt = 0         // this block's biggest clip and its sample
 
-        if shared.clipMaxReset.value != 0, shared.clipMaxReset.exchange(0) != 0 {
-            clipBest = 0
+        // MAX CLIP starts over on a reset, and whenever a setting that changes what reaches the
+        // clipper (or how it clips) moves, so a figure from other settings never shows as current
+        let settings = ClipDSP.clipSettingsHash(p)
+        let resetAsked = shared.clipMaxReset.value != 0 && shared.clipMaxReset.exchange(0) != 0
+        if resetAsked || settings != clipSettings {
+            clipSettings = settings
+            clipBest = 0; clipBestRatio = 1; clipBestFrame = -1
+            markAt = -1
+            clipSerial &+= 1
             shared.clipMaxDB.value = 0
+            shared.clipMaxFrame.value = -1
+            shared.clipMaxSerial.publish(clipSerial)
         }
+        var newMax = false
 
         // SONG capture: delays of the clip stage and of the output behind the input (the same
         // figures the scope rings use below), so each layer lands where its audio came from
@@ -645,13 +691,15 @@ final class ClipDSP: @unchecked Sendable {
         let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy), gBroil = ramps(.broil)
         let ks = smooth
         var ringPos = shared.ringTotal.value          // only this thread writes it
-        // SPECTRUM taps (Spectrum.swift), only while the screen shows them. The input copy goes
-        // in as many slots ahead as the oversampling filters delay the wet branch, so each slot
-        // holds an input and an output frame from the same moment.
-        let feed = shared.spectrum
+        // WAVEFORM taps (WaveScreen.swift), gathered only while the screen shows them. The wet
+        // branch comes out of the oversampling filters tapDelay frames after the input went in,
+        // and the clip stage sits overDelay frames ahead of it, so both are held back that many
+        // frames (inDelay / overDelay) to line up with the output. The audio is not delayed.
+        let feed = shared.wave
         let tapOn = feed.on.value != 0
-        var tapPos = feed.written.value                // only this thread writes it
-        let tapAhead = factor == 1 ? 0 : (factor == 2 ? 4 : 5)
+        let tapDelay = factor == 1 ? 0 : (factor == 2 ? 4 : 5)
+        let overLag = factor == 1 ? 0 : 2
+        let onTimeline = timelineFrame >= 0
 
         for n in 0..<frames {
             sIn += gIn ? dIn : ks * (tIn - sIn); sOut += gOut ? dOut : ks * (tOut - sOut)
@@ -686,7 +734,8 @@ final class ClipDSP: @unchecked Sendable {
             var raws: (Float, Float) = (0, 0)
             var bigPre: Float = 0, bigPost: Float = 0       // clip stage, the channel hit harder
             var xs: (Float, Float) = (0, 0), outs: (Float, Float) = (0, 0)
-            var taps: (Float, Float) = (0, 0), wets: (Float, Float) = (0, 0)   // SPECTRUM input / output
+            var taps: (Float, Float) = (0, 0), wets: (Float, Float) = (0, 0)   // WAVEFORM input / output
+            frameOver = 1
 
             for chIdx in 0..<2 {
                 let s = ch[chIdx]
@@ -696,7 +745,7 @@ final class ClipDSP: @unchecked Sendable {
                 let ax = abs(x)
                 if chIdx == 0 { inPeak.0 = max(inPeak.0, ax) } else { inPeak.1 = max(inPeak.1, ax) }
                 let xd = x * sDrive               // drive pushes into the clipper only
-                if chIdx == 0 { taps.0 = xd } else { taps.1 = xd }    // SPECTRUM INPUT tap
+                if chIdx == 0 { taps.0 = xd } else { taps.1 = xd }    // WAVEFORM INPUT tap
 
                 // --- oversampled nonlinear section ---
                 var wet: Float = 0, ref: Float = 0
@@ -721,7 +770,7 @@ final class ClipDSP: @unchecked Sendable {
 
                 // anti-overshoot: filter ringing after downsampling can't poke past the ceiling
                 wet = min(max(wet, -c), c)
-                if chIdx == 0 { wets.0 = wet } else { wets.1 = wet }  // SPECTRUM OUTPUT tap (before Wet / Dry)
+                if chIdx == 0 { wets.0 = wet } else { wets.1 = wet }  // WAVEFORM OUTPUT tap (before Wet / Dry)
 
                 var out: Float
                 if delta {
@@ -744,6 +793,41 @@ final class ClipDSP: @unchecked Sendable {
             }
 
             if clipOver > clockOver { clockOver = clipOver; clockAt = n }
+
+            // a new MAX CLIP: this very sample, at the clip stage. Its source position is where
+            // the sample entered (the clip stage is clipLag frames behind the input).
+            if frameOver > clipBestRatio {
+                clipBestRatio = frameOver
+                let clipLag = factor == 1 ? 0 : (factor == 2 ? 2 : 3)
+                clipBestFrame = onTimeline ? timelineFrame + n - clipLag : processed - clipLag
+                clipBestClock = onTimeline ? timelineClock : SongClock.relative.rawValue
+                clipSerial &+= 1
+                newMax = true
+                markAt = processed + overLag           // where it comes out of the wet branch
+                markSerial = clipSerial
+            }
+
+            if tapOn {
+                // line the input and the clip stage up with the wet output
+                let slot = processed & 7
+                inDelay[slot] = max(abs(taps.0), abs(taps.1))
+                overDelay[slot] = frameOver
+                let inMag = inDelay[(processed &- tapDelay) & 7]
+                let over = overDelay[(processed &- overLag) & 7]
+                if waveFrames == 0 {
+                    // where the output's first frame came from on the timeline (or the analysis clock)
+                    waveFrame = onTimeline ? timelineFrame + n - tapDelay : processed - tapDelay
+                    waveClock = onTimeline ? timelineClock : SongClock.relative.rawValue
+                }
+                waveIn = max(waveIn, inMag)
+                waveOut = max(waveOut, abs(wets.0), abs(wets.1))
+                waveSq += (wets.0 * wets.0 + wets.1 * wets.1) * 0.5
+                waveOver = max(waveOver, over)
+                if processed == markAt { waveMark = markSerial }
+                waveFrames += 1
+                if waveFrames >= WaveFeed.tickFrames { flushWave(feed) }
+            }
+            processed &+= 1
 
             if capturing {
                 if tickFrames == 0 { tickStart = timelineFrame + n }
@@ -772,13 +856,6 @@ final class ClipDSP: @unchecked Sendable {
             shared.meterOutL[slot] = outs.0; shared.meterOutR[slot] = outs.1
             ringPos = total &+ 1
 
-            if tapOn {
-                feed.inL[(tapPos &+ tapAhead) & SpectrumFeed.mask] = taps.0
-                feed.inR[(tapPos &+ tapAhead) & SpectrumFeed.mask] = taps.1
-                feed.outL[tapPos & SpectrumFeed.mask] = wets.0
-                feed.outR[tapPos & SpectrumFeed.mask] = wets.1
-                tapPos &+= 1
-            }
 
             // loudness: 100 ms blocks into the BS.1770 meters
             accIn += Double(kIn); accOut += Double(kOut)
@@ -812,7 +889,6 @@ final class ClipDSP: @unchecked Sendable {
 
         // publish this block's samples (the UI acquires the count before reading them)
         shared.ringTotal.publish(ringPos)
-        if tapOn { feed.written.publish(tapPos) }
         // a summary never runs on into the next call, which may start somewhere else on the timeline
         if capturing && tickFrames > 0 { flushTick() }
 
@@ -825,9 +901,12 @@ final class ClipDSP: @unchecked Sendable {
         if clipOver > 1 { m[Meter.clip.rawValue] = 1 }
         let blockDB = gainToDB(clipOver)
         m.storeMax(Meter.reductionDB.rawValue, blockDB)
-        if blockDB > clipBest {
-            clipBest = blockDB
-            shared.clipMaxDB.value = blockDB
+        if newMax {
+            clipBest = gainToDB(clipBestRatio)
+            shared.clipMaxDB.value = clipBest
+            shared.clipMaxFrame.value = clipBestFrame
+            shared.clipMaxClock.value = clipBestClock
+            shared.clipMaxSerial.publish(clipSerial)     // last: the set is complete
         }
 
         // Clip Clock: a new biggest clip while the song is playing; publish it and where it was
@@ -853,7 +932,11 @@ final class ClipDSP: @unchecked Sendable {
         // leaves everything under its threshold exactly as it was (ratio 1, nothing divided);
         // where it bends, |out| is above zero, so the ratio is finite. NaN fails the test.
         let ap = abs(y)
-        if ap < a && a.isFinite { clipOver = max(clipOver, min(a / ap, 1e6)) }
+        if ap < a && a.isFinite {
+            let r = min(a / ap, 1e6)
+            clipOver = max(clipOver, r)
+            frameOver = max(frameOver, r)
+        }
         if capturing {
             if pre > tickPreHi { tickPreHi = pre; tickPostHi = y }
             if pre < tickPreLo { tickPreLo = pre; tickPostLo = y }
@@ -881,6 +964,29 @@ final class ClipDSP: @unchecked Sendable {
         tickPreHi = 0; tickPostHi = 0; tickPreLo = 0; tickPostLo = 0
         tickOutHi = 0; tickOutLo = 0; tickOver = 1
         tickRawHi = 0; tickRawLo = 0
+    }
+
+    /// Hands the envelope tick gathered so far to the WAVEFORM feed (audio thread; no allocation).
+    private func flushWave(_ feed: WaveFeed) {
+        feed.push(frame: waveFrame, clock: waveClock, frames: waveFrames, inPeak: waveIn, outPeak: waveOut,
+                  outSquares: waveSq, clip: gainToDB(waveOver), mark: waveMark)
+        waveFrames = 0
+        waveIn = 0; waveOut = 0; waveSq = 0; waveOver = 1; waveMark = 0
+    }
+
+    /// The settings that change what reaches the clipper or how it clips (the ones the Clip Clock
+    /// rescans for), folded into one number (FNV-1a over their bit patterns).
+    static func clipSettingsHash(_ p: AtomicFloats) -> UInt64 {
+        // written out (no array), as this runs on the audio thread every block
+        var h: UInt64 = 0xcbf29ce484222325
+        h = (h ^ UInt64(p[Param.inputDB.rawValue].bitPattern)) &* 0x100000001b3
+        h = (h ^ UInt64(p[Param.driveDB.rawValue].bitPattern)) &* 0x100000001b3
+        h = (h ^ UInt64(p[Param.ceilingDB.rawValue].bitPattern)) &* 0x100000001b3
+        h = (h ^ UInt64(p[Param.clipMode.rawValue].bitPattern)) &* 0x100000001b3
+        h = (h ^ UInt64(p[Param.oversampling.rawValue].bitPattern)) &* 0x100000001b3
+        h = (h ^ UInt64(p[Param.gold.rawValue].bitPattern)) &* 0x100000001b3
+        h = (h ^ UInt64(p[Param.goldMode.rawValue].bitPattern)) &* 0x100000001b3
+        return h
     }
 
     /// Clears filter memory (used before an offline export).

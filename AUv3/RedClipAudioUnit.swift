@@ -157,6 +157,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
         render.transport = transportStateBlock            // the host's song position (Clip Clock, SONG screen)
         shared.scopeClearedAt.value = shared.ringTotal.acquire()     // a fresh start shows a flat line
         shared.songEpoch.value &+= 1                      // a new session: the SONG capture starts over
+        shared.resetClipMax()                             // MAX CLIP belongs to this session's audio only
     }
 
     public override func deallocateRenderResources() {
@@ -234,6 +235,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
                 } else {
                     dsp.songTime = song < 0 ? -1 : song + Double(done) / dsp.sampleRate
                     dsp.timelineFrame = song < 0 ? -1 : timeline.frame + done
+                    dsp.timelineClock = timeline.clock.rawValue
                     dsp.process(inL: srcL + done, inR: srcR + done, outL: outL + done, outR: outR + done,
                                 frames: n, gliding: gliding)
                 }

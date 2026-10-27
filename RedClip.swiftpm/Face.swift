@@ -35,15 +35,6 @@ final class FaceModel: ObservableObject {
 
     func stepMeterZoom() { meterZoom = meterZoom.next }
 
-    /// WAVE (Gold Clip's waveform, Clip Clock and loudness) or SPECTRUM on the screen.
-    /// Remembered between launches. Only the drawing changes; the audio never notices.
-    private static let screenKey = "RedClip.ScreenView"
-    @Published var screenView: ScreenView = ScreenView(rawValue: UserDefaults.standard.integer(forKey: FaceModel.screenKey)) ?? .wave {
-        didSet { UserDefaults.standard.set(screenView.rawValue, forKey: Self.screenKey) }
-    }
-    /// The SPECTRUM screen's analyser (Spectrum.swift): this faceplate's own, so every plug-in
-    /// instance analyses its own audio. It only runs while the screen is showing.
-    let spectrum: SpectrumAnalyzer
     private var helpHide: DispatchWorkItem?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?
@@ -63,7 +54,6 @@ final class FaceModel: ObservableObject {
         shared = state
         params = ParamStore(shared: state)
         meters = MeterReader(shared: state)
-        spectrum = SpectrumAnalyzer(shared: state)
         self.isPlugin = isPlugin
     }
 
