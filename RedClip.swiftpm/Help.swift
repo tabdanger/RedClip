@@ -108,7 +108,7 @@ enum HelpTopic: String, CaseIterable {
         case .delta:
             return "Plays only the difference between the input and the processed sound, so you hear exactly what Red Clip is adding or taking away."
         case .clipMode:
-            return "Hard works like Fruity Soft Clipper: clean up to 3 dB under the ceiling, then a smooth bend that lands flat on it. Classic has a soft knee and rounds peaks off gently. Modern sits in between with a medium knee."
+            return "Hard is clean up to 3 dB under the ceiling, then a smooth bend that lands flat on it. Classic has a soft knee and rounds peaks off gently. Modern sits in between with a medium knee."
         case .link:
             return "Ties Input and Output together. Turn Input up and Output comes down by the same amount, so you can drive harder at the same level."
         case .oversampling:
