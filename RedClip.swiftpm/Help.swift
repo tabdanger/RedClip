@@ -126,7 +126,7 @@ enum HelpTopic: String, CaseIterable {
         case .export:
             return "Renders the whole file through your current settings to a 24-bit WAV you can save or share."
         case .clipClock:
-            return "Finds the spot in the song where Red Clip clips hardest. MAX CLIP is the most the clipper takes off (the same measure as CLIP), MIN:SEC is where it happens. In the app it scans the whole file with your current settings and scans again whenever you change Input, Drive, Ceiling, Red or oversampling. In a DAW it follows playback, so play the song through; the arrow starts a new pass."
+            return "The loudest point of your original audio and when it happens, measured before Input, Drive or any other control, so turning knobs never changes or restarts it. In the app it reads the whole file the moment it loads. In a DAW it follows playback, so play the song through; the arrow starts a new pass."
         }
     }
 }

@@ -79,9 +79,14 @@ final class SharedState: @unchecked Sendable {
     let songMoving: AtomicInt          // 1 while that clock runs (playing)
     let songTotal: AtomicInt           // frames in the loaded song; 0 = unknown (a DAW never says)
     let songClock: AtomicInt           // SongClock raw value: where songFrame comes from
-    let clipMaxDB: AtomicFloat         // MAX CLIP: most gain the clipper took off since the reset, dB
+    // CLIP CLOCK: the loudest sample of the ORIGINAL audio, before Input, Drive or anything
+    // else, and where it is. Knobs never change or restart it. The app measures the whole file
+    // when it loads and fixes it here (clipMaxFixed = 1); in a DAW the audio thread keeps the
+    // loudest input sample since the reset as the host plays.
+    let clipMaxDB: AtomicFloat         // that peak in dBFS (meaningful only while clipMaxFrame >= 0)
     let clipMaxReset: AtomicInt        // UI sets 1, the audio thread takes it
-    // where the MAX CLIP sample was: its position on the timeline it came from (SongClock in
+    let clipMaxFixed = AtomicInt(0)    // 1 = the app set it from the whole file; the audio thread leaves it
+    // where that sample is: its position on the timeline it came from (SongClock in
     // clipMaxClock; -1 = none yet). clipMaxSerial is published last, after the three values,
     // and changes with every new maximum and every reset, so a reader can tell a set apart.
     let clipMaxFrame = AtomicInt(-1)
@@ -142,13 +147,37 @@ final class SharedState: @unchecked Sendable {
         ringTotal.deallocate(); sampleRate.deallocate()
         captureOn.deallocate(); songFrame.deallocate(); songMoving.deallocate(); songTotal.deallocate()
         songClock.deallocate(); clipMaxDB.deallocate(); clipMaxReset.deallocate(); songEpoch.deallocate()
-        clipMaxFrame.deallocate(); clipMaxClock.deallocate(); clipMaxSerial.deallocate()
+        clipMaxFrame.deallocate(); clipMaxClock.deallocate(); clipMaxSerial.deallocate(); clipMaxFixed.deallocate()
     }
 
-    /// MAX CLIP reset (any thread): the readout clears now, the audio thread its own best next block.
+    /// CLIP CLOCK reset (any thread, used in a DAW): the readout clears now, the audio thread
+    /// its own best next block.
     func resetClipMax() {
+        clipMaxFixed.value = 0
         clipMaxReset.value = 1
         clipMaxDB.value = 0
+        clipMaxFrame.value = -1
+    }
+
+    /// The app (main thread): the loaded file's own loudest sample, measured before any control.
+    /// The audio thread leaves it alone until the next reset.
+    func setFileClipMax(peak: Float, frame: Int) {
+        clipMaxFixed.value = 1
+        clipMaxReset.value = 0
+        clipMaxDB.value = gainToDB(peak)
+        clipMaxFrame.value = peak > 0 ? frame : -1
+        clipMaxClock.value = SongClock.file.rawValue
+        clipMaxSerial.publish(clipMaxSerial.value &+ 1)
+    }
+
+    /// The loudest sample of a file (either channel) and its frame. Finite samples only.
+    static func filePeak(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frames: Int) -> (peak: Float, frame: Int) {
+        var peak: Float = 0, at = -1
+        for i in 0..<frames {
+            let a = max(abs(left[i]), abs(right[i]))
+            if a > peak && a.isFinite { peak = a; at = i }
+        }
+        return (peak, at)
     }
 
     /// The MAX CLIP set as one consistent snapshot (UI): nil while the audio thread is mid-update.
@@ -472,11 +501,10 @@ final class ClipDSP: @unchecked Sendable {
     /// of it is the CLIP readout. Red comes before it and Broil, Fire, Wet / Dry and Output after,
     /// so none of those change it.
     private var clipOver: Float = 1
-    private var clipBest: Float = 0   // MAX CLIP (dB) since the last reset
-    private var clipBestRatio: Float = 1                // the same, as |pre| / |post|
+    private var clipBest: Float = 0   // CLIP CLOCK (dBFS of the original input) since the last reset
+    private var clipBestRatio: Float = 0                // the same, as a sample magnitude
     private var clipBestFrame = -1, clipBestClock = 0   // where it happened
     private var clipSerial = 0
-    private var clipSettings: UInt64 = 0                // what the clipper was set to (clipSettingsHash)
     /// Largest |pre| / |post| of the current frame (both channels, every oversampled sample).
     private var frameOver: Float = 1
 
@@ -648,13 +676,14 @@ final class ClipDSP: @unchecked Sendable {
         }
         var clockOver: Float = 1, clockAt = 0         // this block's biggest clip and its sample
 
-        // MAX CLIP starts over on a reset, and whenever a setting that changes what reaches the
-        // clipper (or how it clips) moves, so a figure from other settings never shows as current
-        let settings = ClipDSP.clipSettingsHash(p)
+        // CLIP CLOCK: the original input's loudest sample. Only a reset (or new audio) starts
+        // it over; no knob does, since it is measured before every control. In the app the
+        // whole file was measured when it loaded (clipMaxFixed): then only its marker is placed.
+        let fileMax = shared.clipMaxFixed.value != 0
+        let fixedFrame = fileMax ? shared.clipMaxFrame.value : -1
         let resetAsked = shared.clipMaxReset.value != 0 && shared.clipMaxReset.exchange(0) != 0
-        if resetAsked || settings != clipSettings {
-            clipSettings = settings
-            clipBest = 0; clipBestRatio = 1; clipBestFrame = -1
+        if resetAsked && !fileMax {
+            clipBest = 0; clipBestRatio = 0; clipBestFrame = -1
             markAt = -1
             clipSerial &+= 1
             shared.clipMaxDB.value = 0
@@ -794,17 +823,24 @@ final class ClipDSP: @unchecked Sendable {
 
             if clipOver > clockOver { clockOver = clipOver; clockAt = n }
 
-            // a new MAX CLIP: this very sample, at the clip stage. Its source position is where
-            // the sample entered (the clip stage is clipLag frames behind the input).
-            if frameOver > clipBestRatio {
-                clipBestRatio = frameOver
-                let clipLag = factor == 1 ? 0 : (factor == 2 ? 2 : 3)
-                clipBestFrame = onTimeline ? timelineFrame + n - clipLag : processed - clipLag
-                clipBestClock = onTimeline ? timelineClock : SongClock.relative.rawValue
-                clipSerial &+= 1
-                newMax = true
-                markAt = processed + overLag           // where it comes out of the wet branch
-                markSerial = clipSerial
+            // a new CLIP CLOCK peak: this original input sample, before Input and Drive. Its
+            // marker goes on the tick whose output it becomes (tapDelay frames later).
+            if fileMax {
+                if onTimeline && timelineFrame + n == fixedFrame {
+                    markAt = processed + tapDelay
+                    markSerial = shared.clipMaxSerial.value
+                }
+            } else {
+                let rawPeak = max(abs(raws.0), abs(raws.1))
+                if rawPeak > clipBestRatio && rawPeak.isFinite {
+                    clipBestRatio = rawPeak
+                    clipBestFrame = onTimeline ? timelineFrame + n : processed
+                    clipBestClock = onTimeline ? timelineClock : SongClock.relative.rawValue
+                    clipSerial &+= 1
+                    newMax = true
+                    markAt = processed + tapDelay
+                    markSerial = clipSerial
+                }
             }
 
             if tapOn {
@@ -972,21 +1008,6 @@ final class ClipDSP: @unchecked Sendable {
                   outSquares: waveSq, clip: gainToDB(waveOver), mark: waveMark)
         waveFrames = 0
         waveIn = 0; waveOut = 0; waveSq = 0; waveOver = 1; waveMark = 0
-    }
-
-    /// The settings that change what reaches the clipper or how it clips (the ones the Clip Clock
-    /// rescans for), folded into one number (FNV-1a over their bit patterns).
-    static func clipSettingsHash(_ p: AtomicFloats) -> UInt64 {
-        // written out (no array), as this runs on the audio thread every block
-        var h: UInt64 = 0xcbf29ce484222325
-        h = (h ^ UInt64(p[Param.inputDB.rawValue].bitPattern)) &* 0x100000001b3
-        h = (h ^ UInt64(p[Param.driveDB.rawValue].bitPattern)) &* 0x100000001b3
-        h = (h ^ UInt64(p[Param.ceilingDB.rawValue].bitPattern)) &* 0x100000001b3
-        h = (h ^ UInt64(p[Param.clipMode.rawValue].bitPattern)) &* 0x100000001b3
-        h = (h ^ UInt64(p[Param.oversampling.rawValue].bitPattern)) &* 0x100000001b3
-        h = (h ^ UInt64(p[Param.gold.rawValue].bitPattern)) &* 0x100000001b3
-        h = (h ^ UInt64(p[Param.goldMode.rawValue].bitPattern)) &* 0x100000001b3
-        return h
     }
 
     /// Clears filter memory (used before an offline export).

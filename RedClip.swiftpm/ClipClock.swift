@@ -2,17 +2,9 @@ import SwiftUI
 
 // MARK: - Clip Clock
 //
-// Where in the song the clipper works hardest: MAX CLIP is the most gain the clipper has taken
-// off a sample (the same measure as the CLIP readout, held at its peak), MIN:SEC is the song
-// position of that peak. Play the record through once, jump to that spot and dial Drive, Red and
-// Fire in against the loudest moment. RESET starts a new pass.
-//
-// In the app the whole loaded file is scanned in the background with the current settings
-// (AudioController.scanClipClock), and scanned again whenever a setting that feeds the clipper
-// changes, so the readout is the loudest moment of the entire song, not just what has played.
-// In a DAW the host owns the audio, so the audio thread (ClipDSP) keeps a running best while the
-// host's transport plays and publishes it here only when it grows. The panel reads these at
-// display rate.
+// Superseded: the CLIP CLOCK readout on the WAVEFORM screen (SharedState.clipMax) now shows the
+// original audio's loudest sample and where it is, before any control. This older panel and its
+// state are no longer shown anywhere; ClipDSP still fills ClipClockState from songTime in a DAW.
 
 /// Shared between the audio thread and the UI (lock-free, allocated once).
 final class ClipClockState: @unchecked Sendable {

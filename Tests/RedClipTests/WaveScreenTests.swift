@@ -65,16 +65,17 @@ final class WaveTapTests: XCTestCase {
         }
     }
 
-    func testMaxClipIsTheHardestClippedSampleAndWhereItWas() {
-        let (shared, dsp) = make([.oversampling: 0, .ceilingDB: -6, .clipMode: 0])
+    func testClipClockIsTheLoudestOriginalSampleAndWhereItWas() {
+        // Input and Drive come after the measurement: the figure is the source's own level
+        let (shared, dsp) = make([.oversampling: 0, .ceilingDB: -6, .inputDB: 6, .driveDB: 9])
         var x = [Float](repeating: 0.1, count: 2048)
         x[500] = 0.7
-        x[1000] = 1.0
+        x[1000] = -0.9
         dsp.timelineFrame = 48_000
         dsp.timelineClock = SongClock.file.rawValue
         run(dsp, x)
         let m = shared.clipMax()!
-        XCTAssertEqual(m.db, gainToDB(1.0 / dbToGain(-6)), accuracy: 0.01)
+        XCTAssertEqual(m.db, gainToDB(0.9), accuracy: 0.01)
         XCTAssertEqual(m.frame, 48_000 + 1000)
         XCTAssertEqual(m.clock, .file)
     }
@@ -90,33 +91,50 @@ final class WaveTapTests: XCTestCase {
         XCTAssertEqual(m.clock, .relative)
     }
 
-    func testMaxClipStartsOverWhenTheClipperIsSetDifferently() {
+    func testKnobsNeverRestartTheClipClockOnlyTheResetDoes() {
         let (shared, dsp) = make([.oversampling: 0, .ceilingDB: -6, .clipMode: 0])
         var x = [Float](repeating: 0, count: 1024)
-        x[100] = 1.0
+        x[100] = 0.8
         run(dsp, x)
-        XCTAssertGreaterThan(shared.clipMaxDB.value, 5)
+        XCTAssertEqual(shared.clipMax()?.frame, 100)
         let silence = [Float](repeating: 0, count: 256)
 
-        // Output and Wet / Dry come after the clipper: the figure stays
-        shared[.outputDB] = -3
-        shared[.mix] = 50
-        run(dsp, silence)
-        XCTAssertGreaterThan(shared.clipMaxDB.value, 5)
+        for (p, v) in [(Param.inputDB, 6), (.driveDB, 9), (.ceilingDB, -3), (.clipMode, 1), (.oversampling, 2),
+                       (.gold, 100), (.goldMode, 1), (.outputDB, -3), (.mix, 50)] as [(Param, Float)] {
+            shared[p] = v
+            run(dsp, silence)
+            XCTAssertEqual(shared.clipMax()?.frame, 100, "\(p) must not restart it")
+            XCTAssertEqual(shared.clipMaxDB.value, gainToDB(0.8), accuracy: 0.01)
+        }
 
-        // Drive changes what reaches it: the old figure is not shown as current
-        shared[.driveDB] = 3
-        run(dsp, silence)
-        XCTAssertEqual(shared.clipMaxDB.value, 0)
-        XCTAssertEqual(shared.clipMax()?.frame, -1)
-
-        // and the reset button
-        run(dsp, x)
-        XCTAssertGreaterThan(shared.clipMaxDB.value, 5)
         shared.resetClipMax()
-        XCTAssertEqual(shared.clipMaxDB.value, 0)
+        XCTAssertEqual(shared.clipMax()?.frame, -1)
         run(dsp, silence)
         XCTAssertEqual(shared.clipMax()?.frame, -1)
+    }
+
+    func testTheAppsWholeFilePeakIsKeptAndMarked() {
+        var x = [Float](repeating: 0.1, count: 64 * 40)
+        x[64 * 30 + 5] = -0.95                      // the file's loudest sample, not yet played
+        let peak = x.withUnsafeBufferPointer { SharedState.filePeak(left: $0.baseAddress!, right: $0.baseAddress!, frames: x.count) }
+        XCTAssertEqual(peak.frame, 64 * 30 + 5)
+
+        let (shared, dsp) = make([.oversampling: 1, .driveDB: 12])
+        shared.setFileClipMax(peak: peak.peak, frame: peak.frame)
+        let set = shared.clipMax()!
+        XCTAssertEqual(set.db, gainToDB(0.95), accuracy: 0.01)
+        XCTAssertEqual(set.clock, .file)
+
+        // playing the start of the file (quieter) leaves it alone
+        dsp.timelineFrame = 0
+        run(dsp, Array(x[0..<(64 * 20)]))
+        XCTAssertEqual(shared.clipMax()?.frame, 64 * 30 + 5)
+        XCTAssertEqual(shared.clipMax()?.serial, set.serial)
+
+        // and when playback reaches it, its tick gets the marker
+        dsp.timelineFrame = 64 * 20
+        run(dsp, Array(x[(64 * 20)...]))
+        XCTAssertEqual((0..<40).filter { shared.wave.mark[$0] == set.serial }, [30])
     }
 
     func testTheMaxMarkerLandsOnTheTickTheClipCameOutIn() {

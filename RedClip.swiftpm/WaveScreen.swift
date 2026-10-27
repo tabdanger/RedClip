@@ -12,7 +12,10 @@ import SwiftUI
 //            anti-overshoot clamp: the clipped signal before the Wet / Dry blend (or Delta),
 //            Output, Unity and Bypass;
 //   CLIPPED  the clipper's own gain reduction, |into| / |out of| the clip curve on every
-//            oversampled sample (the same measure as CLIP and MAX CLIP).
+//            oversampled sample (the same measure as CLIP).
+//
+// CLIP CLOCK is the original audio's loudest sample and where it is, before Input, Drive or any
+// other control (SharedState.clipMax), so turning knobs never moves or restarts it.
 //
 // The wet branch leaves the oversampling filters 0 / 4 / 5 frames (1x / 2x / 4x) after the
 // input went in, and the clip stage sits 0 / 2 / 2 frames ahead of the output, so the audio
@@ -216,7 +219,7 @@ struct PlateWaveScreen: View {
                 .accessibilityElement()
                 .accessibilityLabel("Waveform: input in grey, output in white, clipping in red, over the last \(Int(rows.seconds)) seconds")
                 scaleTarget(rows)
-                resetButton(W, rows)
+                if isPlugin { resetButton(W, rows) }     // the app's figure is the whole file's
             }
             .frame(width: W, height: Self.H, alignment: .topLeading)
             .scaleEffect(s, anchor: .topLeading)
@@ -250,7 +253,7 @@ struct PlateWaveScreen: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Reset max clip")
+        .accessibilityLabel("Reset the Clip Clock")
         .position(x: W - Self.side - 14, y: r.narrow ? r.readout2 : r.readout1)
     }
 
@@ -383,9 +386,9 @@ struct PlateWaveScreen: View {
         }
     }
 
-    /// The MAX CLIP sample, where it came out of the clipper, while it is on screen.
+    /// The CLIP CLOCK sample, on the tick it plays out in, while it is on screen.
     private func drawMaxMarker(_ c: GraphicsContext, _ r: Rows, cols: [WaveColumn], colW: CGFloat, rate: Double) {
-        guard let m = shared.clipMax(), m.db > 0.05,
+        guard let m = shared.clipMax(), m.frame >= 0,
               let i = cols.lastIndex(where: { $0.mark == m.serial }) else { return }
         let xx = r.L + (CGFloat(i) + 0.5) * colW
         var line = Path()
@@ -477,10 +480,11 @@ struct PlateWaveScreen: View {
         }
         // processed peak and RMS over the window on screen
         let levels: (peak: Float, rms: Float) = ticks.map(WaveColumns.peakAndRMS) ?? (peak: -Float.infinity, rms: -Float.infinity)
-        // MAX CLIP since the reset (or since the settings or the source last changed)
-        var maxValue = "-- dB", maxAt = ""
-        if let m = shared.clipMax(), m.db > 0.05 {
-            maxValue = String(format: "%.1f dB", m.db)
+        // CLIP CLOCK: the original audio's loudest sample (whole file in the app; since the
+        // reset in a DAW), before any control
+        var maxValue = "-- dBFS", maxAt = ""
+        if let m = shared.clipMax(), m.frame >= 0 {
+            maxValue = String(format: "%.1f dBFS", m.db)
             maxAt = " @ " + stamp(m.frame, m.clock, rate)
         }
 
@@ -496,14 +500,14 @@ struct PlateWaveScreen: View {
         }
 
         if r.narrow {
-            // two rows: time, PEAK, RMS / MAX SINCE RESET
+            // two rows: time, PEAK, RMS / CLIP CLOCK
             let y1 = r.readout1, y2 = r.readout2
             value(time, Self.side, y1, size: 12.5)
             var x = W * 0.42
             x = label("PEAK", x, y1); value("\(WaveTime.dBFS(levels.peak)) dBFS", x, y1, size: 11)
             x = W * 0.72
             x = label("RMS", x, y1); value("\(WaveTime.dBFS(levels.rms)) dBFS", x, y1, size: 11)
-            x = label("MAX SINCE RESET", Self.side, y2)
+            x = label("CLIP CLOCK", Self.side, y2)
             value(maxValue, x, y2, size: 12)
             value(maxAt, x + CGFloat(maxValue.count) * 7.4, y2, color: Self.clipColor, size: 11.5)
         } else {
@@ -514,7 +518,7 @@ struct PlateWaveScreen: View {
             x = W * 0.43
             x = label("RMS", x, y); value("\(WaveTime.dBFS(levels.rms)) dBFS", x, y)
             x = W * 0.60
-            x = label("MAX SINCE RESET", x, y)
+            x = label("CLIP CLOCK", x, y)
             value(maxValue, x, y)
             value(maxAt, x + CGFloat(maxValue.count) * 7.8, y, color: Self.clipColor)
             var seps = Path()
