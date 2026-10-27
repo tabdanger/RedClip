@@ -2,8 +2,8 @@ import SwiftUI
 
 // MARK: - Clip Clock
 //
-// Where in the song the clipper works hardest: MAX CLIP is the furthest the signal has gone past
-// the ceiling (the same measure as the CLIP readout, held at its peak), MIN:SEC is the song
+// Where in the song the clipper works hardest: MAX CLIP is the most gain the clipper has taken
+// off a sample (the same measure as the CLIP readout, held at its peak), MIN:SEC is the song
 // position of that peak. Play the record through once, jump to that spot and dial Drive, Red and
 // Fire in against the loudest moment. RESET starts a new pass.
 //

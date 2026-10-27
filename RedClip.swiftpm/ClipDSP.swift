@@ -40,6 +40,8 @@ enum Param: Int, CaseIterable {
 
 enum Meter: Int {
     // inLUFS / outLUFS are short-term (3 s); M = momentary (400 ms), I = integrated (gated, since reset)
+    // reductionDB: the most gain the clipping stage took off any one sample this block, in dB
+    // (ClipDSP.shape, measured right at the clipper, so Wet / Dry and Output can't inflate it)
     case inPeakL, inPeakR, outPeakL, outPeakR, inLUFS, outLUFS, clip, reductionDB
     case inLUFSM, outLUFSM, inLUFSI, outLUFSI
     static let count = 12
@@ -67,6 +69,19 @@ final class SharedState: @unchecked Sendable {
     let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
     let clipClock = ClipClockState()   // biggest clip and where in the song it happened (ClipClock.swift)
 
+    // SONG view (SongOverview.swift). The audio thread summarises the clip stage and the final
+    // output into `capture` every 64 frames, stamped with the timeline position; the UI folds
+    // those summaries into the song overview. The song clock is the audio's own position.
+    let capture: CaptureRing
+    let captureOn: AtomicInt           // 1 = fill `capture` (plug-in); the app analyses the whole file instead
+    let songFrame: AtomicInt           // audio clock: source frame (app) or host sample position (plug-in)
+    let songMoving: AtomicInt          // 1 while that clock runs (playing)
+    let songTotal: AtomicInt           // frames in the loaded song; 0 = unknown (a DAW never says)
+    let songClock: AtomicInt           // SongClock raw value: where songFrame comes from
+    let clipMaxDB: AtomicFloat         // MAX CLIP: most gain the clipper took off since the reset, dB
+    let clipMaxReset: AtomicInt        // UI sets 1, the audio thread takes it
+    let songEpoch: AtomicInt           // bumped when the song starts over (plug-in: new render session)
+
     // Sample rings for the screen (oscilloscope) and the LED meters. The audio thread writes one
     // value per sample into each; the UI copies the newest stretch at display rate.
     static let ringSize = 16384                       // power of two (~340 ms at 48 kHz)
@@ -86,7 +101,11 @@ final class SharedState: @unchecked Sendable {
     let ringTotal: AtomicInt           // samples written so far, published once per block
     let sampleRate: AtomicFloat
 
-    init() {
+    init(captureCapacity: Int = CaptureRing.defaultCapacity) {
+        capture = CaptureRing(capacity: captureCapacity)
+        captureOn = AtomicInt(0)
+        songFrame = AtomicInt(0); songMoving = AtomicInt(0); songTotal = AtomicInt(0); songClock = AtomicInt(0)
+        clipMaxDB = AtomicFloat(0); clipMaxReset = AtomicInt(0); songEpoch = AtomicInt(0)
         params = AtomicFloats(count: Param.allCases.count)
         for p in Param.allCases { params[p.rawValue] = p.defaultValue }
         meters = AtomicFloats(count: Meter.count)
@@ -114,6 +133,14 @@ final class SharedState: @unchecked Sendable {
         for p in [scopeIn, scopeOut, clipIn, clipOut, meterInL, meterInR, meterOutL, meterOutR] { p.deallocate() }
         scopeClearedAt.deallocate()
         ringTotal.deallocate(); sampleRate.deallocate()
+        captureOn.deallocate(); songFrame.deallocate(); songMoving.deallocate(); songTotal.deallocate()
+        songClock.deallocate(); clipMaxDB.deallocate(); clipMaxReset.deallocate(); songEpoch.deallocate()
+    }
+
+    /// MAX CLIP reset (any thread): the readout clears now, the audio thread its own best next block.
+    func resetClipMax() {
+        clipMaxReset.value = 1
+        clipMaxDB.value = 0
     }
 
     subscript(p: Param) -> Float {
@@ -422,7 +449,13 @@ final class ClipDSP: @unchecked Sendable {
     // Broil (per base-rate sample, like Red): the curve's steepness and its 1 / tanh(steepness)
     private var broilOn = false
     private var broilA: Float = 0, broilNorm: Float = 1
-    private var clipOver: Float = 1   // largest (signal into clipper / ceiling) this block
+    /// Largest |into the clipper| / |out of the clipper| of any sample this block (1 = untouched).
+    /// Measured on each oversampled sample with the clip curve that is actually selected, so a
+    /// soft knee's gentle reduction under the ceiling counts as much as Hard's flat top; 20 log10
+    /// of it is the CLIP readout. Red comes before it and Broil, Fire, Wet / Dry and Output after,
+    /// so none of those change it.
+    private var clipOver: Float = 1
+    private var clipBest: Float = 0   // MAX CLIP (dB) since the last reset
 
     /// Clip Clock: song position (seconds) of this block's first sample, set by whoever calls
     /// process() (the app's playhead, the host's transport). Negative: not playing, don't record.
@@ -443,6 +476,19 @@ final class ClipDSP: @unchecked Sendable {
     private var colPre: Float = 0     // peak into the clipper, gathered in shape()
     private var lastPre: Float = 0    // the sample shape() just fed to the clipper
     private var lastPost: Float = 0   // and what the clipper made of it
+
+    /// SONG view: timeline frame of the first sample of the next process() call (the source
+    /// frame in the app, the host's sample position in a DAW); -1 = not on a timeline (transport
+    /// stopped), so nothing is captured. Set by whoever calls process().
+    var timelineFrame: Int = -1
+    // the summary being gathered (see CaptureRing): the clipper's most positive and most
+    // negative input, each with what the clipper made of that same sample, the final output's
+    // extremes and the largest gain reduction
+    private var capturing = false
+    private var tickFrames = 0, tickStart = -1
+    private var tickPreHi: Float = 0, tickPostHi: Float = 0, tickPreLo: Float = 0, tickPostLo: Float = 0
+    private var tickOutHi: Float = 0, tickOutLo: Float = 0, tickOver: Float = 1
+    private var tickDelays = 0, tickStamp = 0
 
     init(sampleRate: Double, shared: SharedState) {
         self.sampleRate = sampleRate
@@ -564,6 +610,21 @@ final class ClipDSP: @unchecked Sendable {
         }
         var clockOver: Float = 1, clockAt = 0         // this block's biggest clip and its sample
 
+        if shared.clipMaxReset.value != 0, shared.clipMaxReset.exchange(0) != 0 {
+            clipBest = 0
+            shared.clipMaxDB.value = 0
+        }
+
+        // SONG capture: delays of the clip stage and of the output behind the input (the same
+        // figures the scope rings use below), so each layer lands where its audio came from
+        capturing = timelineFrame >= 0 && shared.captureOn.value != 0
+        if capturing {
+            let clipDelay = factor == 1 ? 0 : (factor == 2 ? 2 : 3)
+            let outDelay = factor == 1 || tBypass > 0.5 ? 0 : (factor == 2 ? 4 : 5)
+            tickDelays = clipDelay | outDelay << 8
+            tickStamp = SongStamp.of(p)
+        }
+
         var inPeak: (Float, Float) = (0, 0), outPeak: (Float, Float) = (0, 0)
         clipOver = 1
         // per control: ramping -> fixed step per sample to the target; otherwise -> 0 (smoother)
@@ -672,6 +733,14 @@ final class ClipDSP: @unchecked Sendable {
 
             if clipOver > clockOver { clockOver = clipOver; clockAt = n }
 
+            if capturing {
+                if tickFrames == 0 { tickStart = timelineFrame + n }
+                tickOutHi = max(tickOutHi, outs.0, outs.1)
+                tickOutLo = min(tickOutLo, outs.0, outs.1)
+                tickFrames += 1
+                if tickFrames >= CaptureRing.tickFrames { flushTick() }
+            }
+
             // screen + meter rings. The output comes out of the oversampling filters late (the
             // up-sampling filter and the down-sampling filter each delay it about 2 samples at
             // 2x, 2.3 at 4x), so the original input is stored that many slots ahead, and the
@@ -721,6 +790,8 @@ final class ClipDSP: @unchecked Sendable {
 
         // publish this block's samples (the UI acquires the count before reading them)
         shared.ringTotal.publish(ringPos)
+        // a summary never runs on into the next call, which may start somewhere else on the timeline
+        if capturing && tickFrames > 0 { flushTick() }
 
         // meters: audio thread raises the max, UI takes and clears it in one atomic step
         let m = shared.meters
@@ -729,7 +800,12 @@ final class ClipDSP: @unchecked Sendable {
         m.storeMax(Meter.outPeakL.rawValue, outPeak.0)
         m.storeMax(Meter.outPeakR.rawValue, outPeak.1)
         if clipOver > 1 { m[Meter.clip.rawValue] = 1 }
-        m.storeMax(Meter.reductionDB.rawValue, gainToDB(clipOver))
+        let blockDB = gainToDB(clipOver)
+        m.storeMax(Meter.reductionDB.rawValue, blockDB)
+        if blockDB > clipBest {
+            clipBest = blockDB
+            shared.clipMaxDB.value = blockDB
+        }
 
         // Clip Clock: a new biggest clip while the song is playing; publish it and where it was
         if songTime >= 0 && clockOver > clockBest {
@@ -747,9 +823,19 @@ final class ClipDSP: @unchecked Sendable {
         let a = abs(y)
         colPre = max(colPre, a)
         lastPre = y
-        if a > c { clipOver = max(clipOver, a / c) }     // CLIP readout: how far past the ceiling
+        let pre = y
         y = Curves.clip(y, ceiling: c, knee: knee)
         lastPost = y
+        // CLIP: how much the clipper took off this very sample. Every curve keeps the sign and
+        // leaves everything under its threshold exactly as it was (ratio 1, nothing divided);
+        // where it bends, |out| is above zero, so the ratio is finite. NaN fails the test.
+        let ap = abs(y)
+        if ap < a && a.isFinite { clipOver = max(clipOver, min(a / ap, 1e6)) }
+        if capturing {
+            if pre > tickPreHi { tickPreHi = pre; tickPostHi = y }
+            if pre < tickPreLo { tickPreLo = pre; tickPostLo = y }
+            if ap < a && a.isFinite { tickOver = max(tickOver, min(a / ap, 1e6)) }
+        }
         if broilOn { y = Curves.broil(y, ceiling: c, a: broilA, norm: broilNorm) }
 
         // Alchemy: amplitude-dependent tilt around 4 kHz. Near the ceiling the highs dip up to
@@ -761,6 +847,16 @@ final class ClipDSP: @unchecked Sendable {
             y = lo * (1 + sAlch * 0.035 * e2) + hi * (1 - sAlch * 0.109 * e2)
         }
         return y
+    }
+
+    /// Hands the summary gathered so far to the capture ring (audio thread; no allocation).
+    private func flushTick() {
+        shared.capture.push(frame: tickStart, frames: tickFrames, delays: tickDelays, stamp: tickStamp,
+                            preHi: tickPreHi, postHi: tickPostHi, preLo: tickPreLo, postLo: tickPostLo,
+                            outHi: tickOutHi, outLo: tickOutLo, reductionDB: gainToDB(tickOver))
+        tickFrames = 0
+        tickPreHi = 0; tickPostHi = 0; tickPreLo = 0; tickPostLo = 0
+        tickOutHi = 0; tickOutLo = 0; tickOver = 1
     }
 
     /// Clears filter memory (used before an offline export).

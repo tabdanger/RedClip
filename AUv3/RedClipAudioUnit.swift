@@ -154,8 +154,9 @@ public final class RedClipAudioUnit: AUAudioUnit {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(kAudioUnitErr_FailedInitialization))
         }
         render.prepare(format: inBus.format, frames: maximumFramesToRender, shared: shared)
-        render.transport = transportStateBlock            // the host's song position, for the Clip Clock
+        render.transport = transportStateBlock            // the host's song position (Clip Clock, SONG screen)
         shared.scopeClearedAt.value = shared.ringTotal.acquire()     // a fresh start shows a flat line
+        shared.songEpoch.value &+= 1                      // a new session: the SONG capture starts over
     }
 
     public override func deallocateRenderResources() {
@@ -208,7 +209,13 @@ public final class RedClipAudioUnit: AUAudioUnit {
             //    while the host ramps a control, it's cut every rampStep frames and the value
             //    follows the ramp. Ramps that don't finish here carry on in the next block.
             let start = timestamp.pointee.mSampleTime
-            let song = passThrough ? -1 : state.songPosition(frames: frames, sampleRate: dsp.sampleRate)
+            // The host's timeline for this block. The SONG screen's playhead follows it even while
+            // passing audio through; audio is captured onto it only while the transport moves.
+            let timeline = state.timeline(frames: frames)
+            shared.songFrame.value = timeline.frame
+            shared.songMoving.value = timeline.moving ? 1 : 0
+            shared.songClock.value = timeline.clock.rawValue
+            let song = passThrough || !timeline.moving ? -1 : Double(timeline.frame) / dsp.sampleRate
             var event = events
             var done = 0
             while done < frames {
@@ -226,6 +233,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
                     if stereo && outR != inR { (outR + done).update(from: inR + done, count: n) }
                 } else {
                     dsp.songTime = song < 0 ? -1 : song + Double(done) / dsp.sampleRate
+                    dsp.timelineFrame = song < 0 ? -1 : timeline.frame + done
                     dsp.process(inL: srcL + done, inR: srcR + done, outL: outL + done, outR: outR + done,
                                 frames: n, gliding: gliding)
                 }
@@ -296,7 +304,7 @@ final class RedClipRenderState: @unchecked Sendable {
     private let inputPointers = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: 2)
     private var inputPointerCount = 0
     /// The host's transport (set before rendering starts) and, for hosts without one, how long
-    /// Red Clip has been processing. Both only feed the Clip Clock's song position.
+    /// Red Clip has been processing. They feed the Clip Clock's song position and the SONG screen.
     var transport: AUHostTransportStateBlock?
     private var elapsed: Double = 0
 
@@ -407,18 +415,20 @@ final class RedClipRenderState: @unchecked Sendable {
         }
     }
 
-    /// Clip Clock (audio thread): the song position of this block's first sample, in seconds, or
-    /// -1 while the host's transport is stopped (nothing there to point at).
-    func songPosition(frames: Int, sampleRate: Double) -> Double {
+    /// Audio thread: the timeline position of this block's first sample. With a host transport,
+    /// its sample position (reported while stopped too, so the playhead sits where the host's
+    /// does) and whether it is moving. Without one there is no song position to be had, only
+    /// the frames Red Clip has processed since it started, reported as such (SongClock.relative).
+    func timeline(frames: Int) -> (frame: Int, moving: Bool, clock: SongClock) {
         defer { elapsed += Double(frames) }
         if let transport {
             var flags = AUHostTransportStateFlags(rawValue: 0)
             var position: Double = 0
-            if transport(&flags, &position, nil, nil) {
-                return flags.contains(.moving) ? position / sampleRate : -1
+            if transport(&flags, &position, nil, nil), position.isFinite, abs(position) < 1e15 {
+                return (Int(position.rounded()), flags.contains(.moving), .host)
             }
         }
-        return elapsed / sampleRate
+        return (Int(elapsed), true, .relative)
     }
 
     /// Off the audio thread (render resources being reset): forget ramps in progress.

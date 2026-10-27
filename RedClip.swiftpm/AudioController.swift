@@ -66,6 +66,14 @@ final class AudioController: ObservableObject {
         face.loadSample = { [weak self] url in self?.load(url: url) }
         face.loadDemo = { [weak self] in self?.loadDemo() }
         face.clipClockReset = { [weak self] in self?.startClipClockScan() }
+        face.songScrub = { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .began: self.beginScrub()
+            case .moved(let fraction): self.seek(to: fraction)
+            case .ended: self.endScrub()
+            }
+        }
         // a setting that feeds the clipper changed: scan the file again once it settles
         Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.rescanIfSettingsChanged() }
@@ -106,11 +114,13 @@ final class AudioController: ObservableObject {
         if !isPowered { face.setPowered(true) }
         if !engine.isRunning { try? engine.start() }
         if !scrubbing { playFlag.value = 1 }
+        shared.songMoving.value = 1
         isPlaying = true
     }
 
     func stop() {
         playFlag.value = 0
+        shared.songMoving.value = 0
         isPlaying = false
     }
 
@@ -135,6 +145,7 @@ final class AudioController: ObservableObject {
         let target = min(b.frames - 1, max(0, Int(fraction * Double(b.frames))))
         seekRequest.value = target
         playhead.value = target                      // so the bar follows the finger straight away
+        shared.songFrame.value = target              // and the SONG playhead jumps there, no sweep
     }
 
     /// Stopped (power off, new audio): the screen starts again from a flat line. Paused
@@ -201,9 +212,16 @@ final class AudioController: ObservableObject {
         ph.value = 0          // the engine is stopped here, so nothing renders while these reset
         clearScope()
         seek.value = -1
+        // the SONG screen's clock: frames into this file, published by the render block
+        shared.songFrame.value = 0
+        shared.songTotal.value = b.frames
+        shared.songClock.value = SongClock.file.rawValue
+        face.song.load(SongAudio(left: UnsafePointer(b.left), right: UnsafePointer(b.right),
+                                 frames: b.frames, sampleRate: b.sampleRate, owner: b))
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
         let node = AudioController.makeSourceNode(format: fmt, buffer: b, dsp: dsp, playhead: ph, playFlag: flag, seek: seek,
+                                                  songFrame: shared.songFrame,
                                                   scratchL: sL, scratchR: sR, chunk: chunk)
 
         engine.attach(node)
@@ -224,6 +242,7 @@ final class AudioController: ObservableObject {
                                                    playhead ph: AtomicInt,
                                                    playFlag flag: AtomicInt,
                                                    seek: AtomicInt,
+                                                   songFrame: AtomicInt,
                                                    scratchL sL: UnsafeMutablePointer<Float>,
                                                    scratchR sR: UnsafeMutablePointer<Float>,
                                                    chunk: Int) -> AVAudioSourceNode {
@@ -259,6 +278,7 @@ final class AudioController: ObservableObject {
                 done += n
             }
             ph.value = pos
+            songFrame.value = pos            // the SONG playhead: the audio's own position, loops included
             return noErr
         }
     }
@@ -278,10 +298,10 @@ final class AudioController: ObservableObject {
     //
     // The loaded file runs through its own ClipDSP (current settings, no audio out), off the main
     // thread, and the biggest overshoot past the ceiling and its position land in the Clip Clock.
-    // Only the settings that change what reaches the clipper start a new scan; a newer scan
-    // stops an older one.
+    // Only the settings that change what reaches the clipper (or how it clips) start a new
+    // scan; a newer scan stops an older one.
 
-    private static let clipSettings: [Param] = [.inputDB, .driveDB, .ceilingDB, .oversampling, .gold, .goldMode]
+    private static let clipSettings: [Param] = [.inputDB, .driveDB, .ceilingDB, .clipMode, .oversampling, .gold, .goldMode]
     private var scannedSettings: [Float] = []
     private let scanGeneration = AtomicInt(0)
 
@@ -312,7 +332,7 @@ final class AudioController: ObservableObject {
     /// The whole file through a private ClipDSP; nil if `stop` says a newer scan took over.
     nonisolated static func scanClipClock(_ b: PlayerBuffer, settings: [Float],
                                           stop: () -> Bool) -> (db: Float, seconds: Float)? {
-        let state = SharedState()
+        let state = SharedState(captureCapacity: 64)       // private; nothing here is captured
         for (i, v) in settings.enumerated() where i < state.params.count { state.params[i] = v }
         state[.bypass] = 0
         let dsp = ClipDSP(sampleRate: b.sampleRate, shared: state)
@@ -352,7 +372,7 @@ final class AudioController: ObservableObject {
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<URL, Error> in
                 do {
-                    let state = SharedState()
+                    let state = SharedState(captureCapacity: 64)
                     for (i, v) in snapshot.enumerated() { state.params[i] = v }
                     state[.bypass] = 0
                     let dsp = ClipDSP(sampleRate: b.sampleRate, shared: state)

@@ -82,3 +82,25 @@ struct AtomicFloat: @unchecked Sendable {
         nonmutating set { atom.store(newValue.bitPattern, ordering: .relaxed) }
     }
 }
+
+/// A fixed array of Ints, each one atomic (frame positions and stamps in the song capture ring).
+struct AtomicInts: @unchecked Sendable {
+    private let base: UnsafeMutablePointer<UnsafeAtomic<Int>.Storage>
+    let count: Int
+
+    init(count: Int, initial: Int = 0) {
+        self.count = count
+        base = .allocate(capacity: count)
+        for i in 0..<count { (base + i).initialize(to: .init(initial)) }
+    }
+
+    func deallocate() {
+        base.deinitialize(count: count)
+        base.deallocate()
+    }
+
+    @inline(__always) subscript(i: Int) -> Int {
+        get { UnsafeAtomic(at: base + i).load(ordering: .relaxed) }
+        nonmutating set { UnsafeAtomic(at: base + i).store(newValue, ordering: .relaxed) }
+    }
+}
