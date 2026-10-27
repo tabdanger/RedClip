@@ -60,6 +60,7 @@ struct PluginRootView: View {
             let scale = min(geo.size.width / size.width, geo.size.height / size.height)
             FaceplateView(face: face, params: face.params, layout: layout)
                 .helpBubbles(face, scale: layout.bubbleScale)
+                .environment(\.plateScale, scale)        // the SONG screen draws for the window's real size
                 .scaleEffect(scale)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .redClipPresetMenuHost(face: face)

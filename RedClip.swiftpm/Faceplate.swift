@@ -136,16 +136,35 @@ struct FaceplateView: View {
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { face.stepMeterZoom() }
                 .helpTarget(.outputMeter, face).place(L.meterOut.frame)
-            PlateScreen(shared: face.shared, scope: face.meters.scope, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
-                        isPlugin: face.isPlugin)
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { face.stepMeterZoom() }
-                .helpTarget(.screen, face).place(L.screen)
+            if face.screenMode == .live {
+                PlateScreen(shared: face.shared, scope: face.meters.scope, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
+                            isPlugin: face.isPlugin, legendX: PlateScreen.legendBesideSwitch)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { face.stepMeterZoom() }
+                    .helpTarget(.screen, face).place(L.screen)
+            } else {
+                PlateSongScreen(store: face.song, shared: face.shared, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
+                                isPlugin: face.isPlugin, scrub: face.songScrub)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { face.stepMeterZoom() }
+                    .helpTarget(.songScreen, face).place(L.screen)
+            }
             PlateClipNumber(reader: face.meters, center: CGPoint(x: L.clipNumber.x - L.clip.minX, y: L.clipNumber.y - L.clip.minY),
                             fontSize: L.clipFont)
                 .helpTarget(.clipReadout, face).place(L.clip)
-            clipClock
+            if face.screenMode == .live { clipClock }
+            screenModeSwitch
         }
+    }
+
+    /// LIVE / SONG in the screen's top-left corner (screen units, 258 high), in both views.
+    private var screenModeSwitch: some View {
+        let s = L.screen.height / PlateScreen.H, t = ScreenModeSwitch.touch
+        return ScreenModeSwitch(mode: $face.screenMode)
+            .frame(width: t.width * 2, height: t.height, alignment: .topLeading)
+            .scaleEffect(s)
+            .helpTarget(.screenMode, face)
+            .place(x: L.screen.minX + 12 * s, y: L.screen.minY, w: t.width * 2 * s, h: t.height * s)
     }
 
     /// The meter and the scale printed beside it: double-tapping either steps the screen's zoom,
@@ -581,8 +600,13 @@ struct PlateScreen: View {
     let ceilingDB: Float
     var zoom: MeterZoom = .full
     var isPlugin = false
+    /// Where the INPUT / CLIPPED OUTPUT legend starts: beside the LIVE / SONG switch on the face.
+    var legendX: CGFloat = 12
     @Environment(\.scenePhase) private var phase
     @State private var visible = false
+
+    /// The legend's start with the LIVE / SONG switch (12 ... 116) in the corner.
+    static let legendBesideSwitch: CGFloat = 126
 
     // Drawn in the scope's own space: 258 high, and as wide as the glass's shape needs
     // (910 on the iPad face, about 420 on the iPhone face), then scaled onto the glass.
@@ -640,9 +664,12 @@ struct PlateScreen: View {
             var p = Path(); p.move(to: CGPoint(x: L, y: cy - sgn * ceil * k)); p.addLine(to: CGPoint(x: R, y: cy - sgn * ceil * k))
             c.stroke(p, with: .color(Color(hex: 0x91282b)), style: StrokeStyle(lineWidth: 1, dash: [6, 7]))
         }
-        c.draw(Text("INPUT").font(.system(size: 13)).foregroundColor(Color(hex: 0xb3b9c2)), at: CGPoint(x: 12, y: 15), anchor: .leading)
-        c.draw(Text("CLIPPED OUTPUT").font(.system(size: 13)).foregroundColor(Color(hex: 0xff4145)), at: CGPoint(x: 80, y: 15), anchor: .leading)
-        c.draw(Text(String(format: "CEILING  %.1f dB", ceilingDB)).font(.system(size: 13)).foregroundColor(Color(hex: 0xff4145)),
+        // the narrow iPhone glass takes the legend a point smaller, so it clears CEILING
+        let legend: CGFloat = W < 600 && legendX > 12 ? 12 : 13
+        c.draw(Text("INPUT").font(.system(size: legend)).foregroundColor(Color(hex: 0xb3b9c2)), at: CGPoint(x: legendX, y: 15), anchor: .leading)
+        c.draw(Text("CLIPPED OUTPUT").font(.system(size: legend)).foregroundColor(Color(hex: 0xff4145)),
+               at: CGPoint(x: legendX + legend * 5.2, y: 15), anchor: .leading)
+        c.draw(Text(String(format: "CEILING  %.1f dB", ceilingDB)).font(.system(size: legend)).foregroundColor(Color(hex: 0xff4145)),
                at: CGPoint(x: W - 12, y: 15), anchor: .trailing)
 
         // the newest ~120 ms, one column per unit of width
