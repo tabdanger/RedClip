@@ -4,7 +4,7 @@ import SwiftUI
 //
 // INPUT and OUTPUT (CLIPPED) spectra on the screen's glass, drawn in the screen's own units
 // (258 high; about 932 wide on the iPad face, 422 on the iPhone face). Rows, top to bottom:
-// the SPECTRUM tag and the status; the legend and the ceiling label; the plot (0 to -72 dBFS,
+// the WAVE / SPECTRUM switch (Faceplate) and the status; the legend and the ceiling label; the plot (0 to -72 dBFS,
 // 20 Hz to 20 kHz or Nyquist, log); the frequency labels; elapsed time and MAX CLIP.
 //
 // The curves come from SpectrumAnalyzer (Spectrum.swift), which works off the main thread; this
@@ -73,16 +73,6 @@ struct PlateSpectrumScreen: View {
     private func labels(_ W: CGFloat) -> some View {
         let narrow = W < 600
         return ZStack(alignment: .topLeading) {
-            Text("SPECTRUM")
-                .font(.system(size: 9.5, weight: .bold))
-                .tracking(1.2)
-                .foregroundStyle(Color.white)
-                .frame(width: 74, height: 17)
-                .background(RoundedRectangle(cornerRadius: 3)
-                    .fill(LinearGradient(colors: [Color(hex: 0xe8363b), Color(hex: 0xa3171c)], startPoint: .top, endPoint: .bottom)))
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color(hex: 0xff6a6e).opacity(0.7), lineWidth: 1))
-                .shadow(color: Plate.glow.opacity(0.5), radius: 4)
-                .position(x: Self.side + 37, y: Self.tagY)
             HStack(spacing: narrow ? 8 : 12) {
                 key(Self.inputColor, "INPUT", nil)
                 key(Self.outputColor, "OUTPUT", "(CLIPPED)")
@@ -216,9 +206,10 @@ struct PlateSpectrumScreen: View {
         // status beside the tag: LIVE while audio arrives, HOLD when the source is paused
         let status: (String, Color) = bypassed ? ("BYPASS", Self.ceilingColor)
             : (frame.live ? ("LIVE", Self.outputColor) : ("HOLD", Self.labelColor))
-        c.fill(Path(CGRect(x: Self.side + 84, y: Self.tagY - 3, width: 6, height: 6)), with: .color(status.1))
+        let sx = 12 + ScreenViewSwitch.width + 10        // beside the WAVE / SPECTRUM switch
+        c.fill(Path(CGRect(x: sx, y: Self.tagY - 3, width: 6, height: 6)), with: .color(status.1))
         c.draw(Text(status.0).font(.system(size: 9.5, weight: .semibold)).tracking(1).foregroundColor(Color(hex: 0xd0d3d8)),
-               at: CGPoint(x: Self.side + 95, y: Self.tagY), anchor: .leading)
+               at: CGPoint(x: sx + 11, y: Self.tagY), anchor: .leading)
 
         // elapsed time (left half), MAX CLIP (right half), split by a faint line
         var divider = Path()
