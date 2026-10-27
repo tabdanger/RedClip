@@ -30,6 +30,9 @@ final class AudioController: ObservableObject {
 
     @Published var isPlaying = false
     @Published var fileName = "Demo Loop"
+    /// The loaded file's loudest moments, loudest first (the scrub bar's highlights; the first
+    /// is the CLIP CLOCK sample).
+    @Published private(set) var clipPoints: [ClipPoint] = []
     @Published var isBusy = false
     @Published var exportURL: URL?
     @Published var errorMessage: String?
@@ -65,6 +68,7 @@ final class AudioController: ObservableObject {
         face.onPowerChange = { [weak self] on in self?.powerChanged(on) }
         face.loadSample = { [weak self] url in self?.load(url: url) }
         face.loadDemo = { [weak self] in self?.loadDemo() }
+        face.jumpToFrame = { [weak self] frame in self?.seek(toFrame: frame) }
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
                                                object: nil, queue: .main) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -81,6 +85,12 @@ final class AudioController: ObservableObject {
     var progress: Double {
         guard let b = buffer else { return 0 }
         return Double(playhead.value) / Double(b.frames)
+    }
+
+    /// Length of the loaded audio, in seconds.
+    var duration: Double {
+        guard let b = buffer else { return 0 }
+        return Double(b.frames) / b.sampleRate
     }
 
     func togglePlay() { isPlaying ? stop() : play() }
@@ -129,7 +139,13 @@ final class AudioController: ObservableObject {
 
     func seek(to fraction: Double) {
         guard let b = buffer else { return }
-        let target = min(b.frames - 1, max(0, Int(fraction * Double(b.frames))))
+        seek(toFrame: Int(fraction * Double(b.frames)))
+    }
+
+    /// Moves playback to exactly this frame of the file (playing carries on from there).
+    func seek(toFrame frame: Int) {
+        guard let b = buffer else { return }
+        let target = min(b.frames - 1, max(0, frame))
         seekRequest.value = target
         playhead.value = target                      // so the bar follows the finger straight away
         shared.songFrame.value = target              // and the elapsed time jumps there
@@ -206,6 +222,7 @@ final class AudioController: ObservableObject {
         // CLIP CLOCK: the file's own loudest sample and where it is, before any control
         let peak = SharedState.filePeak(left: b.left, right: b.right, frames: b.frames)
         shared.setFileClipMax(peak: peak.peak, frame: peak.frame)
+        clipPoints = ClipPoint.loudest(left: b.left, right: b.right, frames: b.frames, sampleRate: b.sampleRate)
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
         let node = AudioController.makeSourceNode(format: fmt, buffer: b, dsp: dsp, playhead: ph, playFlag: flag, seek: seek,

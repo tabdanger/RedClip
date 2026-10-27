@@ -45,6 +45,16 @@ final class FaceModel: ObservableObject {
 
     func stepMeterZoom() { meterZoom = meterZoom.next }
 
+    /// Which waveform layers show (the legend chips). Remembered between launches; all on at first.
+    private static let layersKey = "RedClip.WaveLayers"
+    @Published var waveLayers: WaveLayers = WaveLayers(rawValue: UserDefaults.standard.object(forKey: FaceModel.layersKey) as? Int ?? WaveLayers.all.rawValue) {
+        didSet { UserDefaults.standard.set(waveLayers.rawValue, forKey: Self.layersKey) }
+    }
+
+    func toggleLayer(_ l: WaveLayers) {
+        if waveLayers.contains(l) { waveLayers.remove(l) } else { waveLayers.insert(l) }
+    }
+
     private var helpHide: DispatchWorkItem?
     /// The app stops / starts its audio engine here; the plug-in just passes audio through.
     var onPowerChange: ((Bool) -> Void)?
@@ -58,6 +68,8 @@ final class FaceModel: ObservableObject {
     /// The app's Clip Clock reset: scan the whole file again (nil in a DAW).
     var clipClockReset: (() -> Void)?
     var loadDemo: (() -> Void)?
+    /// The app's transport: play from this frame of the file (nil in a DAW).
+    var jumpToFrame: ((Int) -> Void)?
 
     init(isPlugin: Bool) {
         let state = SharedState()

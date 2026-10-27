@@ -138,7 +138,9 @@ struct FaceplateView: View {
                 .helpTarget(.outputMeter, face).place(L.meterOut.frame)
             PlateWaveScreen(shared: face.shared, ceilingDB: params[.ceilingDB], zoom: face.meterZoom,
                             bypassed: params[.bypass] > 0.5, isPlugin: face.isPlugin,
-                            onZoom: { face.stepMeterZoom() })
+                            onZoom: { face.stepMeterZoom() },
+                            layers: face.waveLayers, onToggle: { face.toggleLayer($0) },
+                            onJump: face.jumpToFrame)
                 .helpTarget(.screen, face).place(L.screen)
             PlateClipNumber(reader: face.meters, center: CGPoint(x: L.clipNumber.x - L.clip.minX, y: L.clipNumber.y - L.clip.minY),
                             fontSize: L.clipFont)

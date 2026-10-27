@@ -2,24 +2,24 @@ import SwiftUI
 
 // MARK: - WAVEFORM
 //
-// The screen shows the newest few seconds as magnitude envelopes in dBFS, measured at two taps
-// in ClipDSP.process:
+// The screen shows the newest few seconds as magnitude envelopes in dBFS, from three taps in
+// ClipDSP.process:
 //
-//   INPUT    the base-rate sample after the Input and Drive gains (x * sIn * sDrive), the last
-//            point before the oversampled clip stage (Red, the clipper, Broil and Alchemy all
-//            run inside that stage, after this tap);
-//   OUTPUT   the wet branch after the clip stage, the down-sampling filter, Box Tone and the
-//            anti-overshoot clamp: the clipped signal before the Wet / Dry blend (or Delta),
-//            Output, Unity and Bypass;
+//   INPUT    the original audio, exactly as it arrives, before Input, Drive or any control;
 //   CLIPPED  the clipper's own gain reduction, |into| / |out of| the clip curve on every
-//            oversampled sample (the same measure as CLIP).
+//            oversampled sample (the same measure as CLIP), drawn as a red cap on top of the
+//            original: as many dB thick as the clipper took off there;
+//   OUTPUT   the final output, after Wet / Dry, Output, Unity and Bypass: what you hear.
+//
+// Each layer can be switched off from its legend chip (WaveLayers, remembered by the face).
 //
 // CLIP CLOCK is the original audio's loudest sample and where it is, before Input, Drive or any
 // other control (SharedState.clipMax), so turning knobs never moves or restarts it.
 //
-// The wet branch leaves the oversampling filters 0 / 4 / 5 frames (1x / 2x / 4x) after the
-// input went in, and the clip stage sits 0 / 2 / 2 frames ahead of the output, so the audio
-// thread holds the input and clip copies back that many frames before summarising. Every tick
+// The output leaves the oversampling filters 0 / 4 / 5 frames (1x / 2x / 4x) after the input
+// went in (none when fully bypassed), and the clip stage sits 0 / 2 / 2 frames ahead of the
+// output, so the audio thread holds the input and clip copies back that many frames before
+// summarising. Every tick
 // (64 frames) then describes one moment on all three layers. The audio itself is never delayed
 // and no stage moves.
 //
@@ -39,10 +39,10 @@ final class WaveFeed: @unchecked Sendable {
     let frame = AtomicInts(count: WaveFeed.size)     // timeline position of the tick's first output frame
     let clock = AtomicInts(count: WaveFeed.size)     // SongClock raw value of that position
     let frames = AtomicInts(count: WaveFeed.size)    // frames in the tick (tickFrames)
-    let mark = AtomicInts(count: WaveFeed.size)      // MAX CLIP serial if that maximum came out here, else 0
-    let inPeak = AtomicFloats(count: WaveFeed.size)  // largest |input tap| (L or R)
-    let outPeak = AtomicFloats(count: WaveFeed.size) // largest |output tap|
-    let outSquares = AtomicFloats(count: WaveFeed.size) // sum over the tick of (L^2 + R^2) / 2, output tap
+    let mark = AtomicInts(count: WaveFeed.size)      // CLIP CLOCK serial if that sample came out here, else 0
+    let inPeak = AtomicFloats(count: WaveFeed.size)  // largest |original input| (L or R)
+    let outPeak = AtomicFloats(count: WaveFeed.size) // largest |final output|
+    let outSquares = AtomicFloats(count: WaveFeed.size) // sum over the tick of (L^2 + R^2) / 2, final output
     let clip = AtomicFloats(count: WaveFeed.size)    // most the clipper took off in the tick, dB
     let written = AtomicInt(0)                   // ticks written so far (never wraps), published per tick
 
@@ -147,6 +147,15 @@ enum WaveTime {
     }
 }
 
+/// Which waveform layers are drawn (the legend chips switch them).
+struct WaveLayers: OptionSet, Equatable {
+    let rawValue: Int
+    static let input = WaveLayers(rawValue: 1)
+    static let output = WaveLayers(rawValue: 2)
+    static let clipped = WaveLayers(rawValue: 4)
+    static let all: WaveLayers = [.input, .output, .clipped]
+}
+
 /// The audio-flow memory the screen keeps between frames (a class, so drawing can update it).
 private final class WaveSeen {
     var written = -1
@@ -166,6 +175,12 @@ struct PlateWaveScreen: View {
     var bypassed = false
     var isPlugin = false
     var onZoom: () -> Void = {}
+    /// Layers on screen, and what a legend chip does when tapped.
+    var layers: WaveLayers = .all
+    var onToggle: (WaveLayers) -> Void = { _ in }
+    /// The app: move playback to a frame of the file (tapping the CLIP CLOCK readout). nil in a DAW,
+    /// whose transport Red Clip can't move.
+    var onJump: ((Int) -> Void)?
     @Environment(\.scenePhase) private var phase
     @State private var visible = false
     @State private var seen = WaveSeen()
@@ -217,8 +232,10 @@ struct PlateWaveScreen: View {
                 }
                 .frame(width: W, height: Self.H)
                 .accessibilityElement()
-                .accessibilityLabel("Waveform: input in grey, output in white, clipping in red, over the last \(Int(rows.seconds)) seconds")
+                .accessibilityLabel("Waveform: original audio in grey, what the clipper takes off in red, final output in white, over the last \(Int(rows.seconds)) seconds")
                 scaleTarget(rows)
+                legend(rows)
+                jumpTarget(W, rows)
                 if isPlugin { resetButton(W, rows) }     // the app's figure is the whole file's
             }
             .frame(width: W, height: Self.H, alignment: .topLeading)
@@ -227,6 +244,59 @@ struct PlateWaveScreen: View {
         }
         .onAppear { visible = true; shared.wave.on.value = 1 }
         .onDisappear { visible = false; shared.wave.on.value = 0 }
+    }
+
+    // MARK: Legend chips (tap to show / hide a layer)
+
+    /// Beside the status on the iPad, on its own row on the iPhone.
+    private func legend(_ r: Rows) -> some View {
+        let chips: [(WaveLayers, Color, String)] = [(.input, Self.inputColor, "INPUT"),
+                                                    (.clipped, Self.clipColor, "CLIPPED"),
+                                                    (.output, Self.outputColor, "OUTPUT")]
+        return HStack(spacing: 4) {
+            ForEach(chips, id: \.2) { chip in
+                let on = layers.contains(chip.0)
+                Button { onToggle(chip.0) } label: {
+                    HStack(spacing: 4) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(on ? chip.1 : Color.clear)
+                            .overlay(RoundedRectangle(cornerRadius: 1.5).stroke(chip.1, lineWidth: 1))
+                            .frame(width: 7, height: 7)
+                        Text(chip.2)
+                            .font(.system(size: 9.5, weight: .medium)).tracking(0.8)
+                            .foregroundStyle(on ? Color(hex: 0xb3b9c2) : Color(hex: 0x5c6066))
+                            .strikethrough(!on, color: Color(hex: 0x5c6066))
+                    }
+                    .padding(.horizontal, 5)
+                    .frame(height: 24)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(chip.2.capitalized) layer")
+                .accessibilityValue(on ? "Shown" : "Hidden")
+                .accessibilityHint("Shows or hides this layer")
+            }
+        }
+        .fixedSize()
+        // leading edge where the old drawn legend began (chips carry 5 units of padding)
+        .frame(width: 260, height: 24, alignment: .leading)
+        .position(x: (r.narrow ? Self.side - 5 : Self.side + 143) + 130, y: r.narrow ? Self.legendRowY : Self.headerY)
+    }
+
+    /// The app: tapping the CLIP CLOCK readout moves playback to that sample.
+    @ViewBuilder
+    private func jumpTarget(_ W: CGFloat, _ r: Rows) -> some View {
+        if let onJump, !isPlugin {
+            let frame = shared.clipMax().map(\.frame) ?? -1
+            Button { if let m = shared.clipMax(), m.frame >= 0 { onJump(m.frame) } } label: {
+                Color.clear.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(width: r.narrow ? W - 2 * Self.side : W * 0.4 - Self.side, height: 26)
+            .position(x: r.narrow ? W / 2 : W * 0.6 + (W * 0.4 - Self.side) / 2, y: r.narrow ? r.readout2 : r.readout1)
+            .accessibilityLabel("Jump to the Clip Clock")
+            .disabled(frame < 0)
+        }
     }
 
     // MARK: Scale (double-tap to zoom) and reset
@@ -301,7 +371,8 @@ struct PlateWaveScreen: View {
         func x(_ i: Int) -> CGFloat { r.L + (CGFloat(i) + 0.5) * colW }
 
         if !cols.isEmpty {
-            // INPUT (grey) and OUTPUT (silver) as filled envelopes rising from the floor
+            // INPUT (grey, the original) and OUTPUT (white, the final output) as filled envelopes
+            // rising from the floor, and CLIPPED (red) capping the original
             func envelope(_ v: (WaveColumn) -> Float) -> (line: Path, fill: Path) {
                 var line = Path(), fill = Path()
                 var open = false
@@ -320,20 +391,25 @@ struct PlateWaveScreen: View {
                 return (line, fill)
             }
             let inE = envelope { $0.inPeak }, outE = envelope { $0.outPeak }
-            c.fill(inE.fill, with: .linearGradient(Gradient(colors: [Self.inputColor.opacity(0.95), Self.inputColor.opacity(0.35)]),
-                                                   startPoint: CGPoint(x: 0, y: r.top), endPoint: CGPoint(x: 0, y: r.bottom)))
-            c.fill(outE.fill, with: .linearGradient(Gradient(colors: [Self.outputColor.opacity(0.32), Self.outputColor.opacity(0.06)]),
-                                                    startPoint: CGPoint(x: 0, y: r.top), endPoint: CGPoint(x: 0, y: r.bottom)))
-
-            // CLIPPED: where the clipper took something off, the part of the input above the output
-            var cut = Path()
-            for i in cols.indices where cols[i].has && cols[i].clipDB > 0.05 {
-                let yIn = Self.y(amplitude: cols[i].inPeak, r, zoom), yOut = Self.y(amplitude: cols[i].outPeak, r, zoom)
-                let top = min(yIn, yOut - 2)
-                cut.addRect(CGRect(x: r.L + CGFloat(i) * colW, y: top, width: colW + 0.4, height: max(yOut - top, 1.5)))
+            if layers.contains(.input) {
+                c.fill(inE.fill, with: .linearGradient(Gradient(colors: [Self.inputColor.opacity(0.95), Self.inputColor.opacity(0.35)]),
+                                                       startPoint: CGPoint(x: 0, y: r.top), endPoint: CGPoint(x: 0, y: r.bottom)))
             }
-            c.fill(cut, with: .color(Self.clipColor.opacity(0.85)))
-            c.stroke(outE.line, with: .color(Self.outputColor), style: StrokeStyle(lineWidth: 1.1, lineJoin: .round))
+            if layers.contains(.output) {
+                c.fill(outE.fill, with: .linearGradient(Gradient(colors: [Self.outputColor.opacity(0.32), Self.outputColor.opacity(0.06)]),
+                                                        startPoint: CGPoint(x: 0, y: r.top), endPoint: CGPoint(x: 0, y: r.bottom)))
+                c.stroke(outE.line, with: .color(Self.outputColor), style: StrokeStyle(lineWidth: 1.1, lineJoin: .round))
+            }
+            // CLIPPED: on top of the original, as many dB thick as the clipper took off there
+            if layers.contains(.clipped) {
+                var cut = Path()
+                for i in cols.indices where cols[i].has && cols[i].clipDB > 0.05 {
+                    let yTop = Self.y(amplitude: cols[i].inPeak, r, zoom)
+                    let yCut = Self.y(amplitude: cols[i].inPeak / dbToGain(cols[i].clipDB), r, zoom)
+                    cut.addRect(CGRect(x: r.L + CGFloat(i) * colW, y: yTop, width: colW + 0.4, height: max(yCut - yTop, 1.5)))
+                }
+                c.fill(cut, with: .color(Self.clipColor.opacity(0.9)))
+            }
 
             // over the top of the scale: a mark on the top edge
             var overIn = Path(), overOut = Path()
@@ -342,8 +418,8 @@ struct PlateWaveScreen: View {
                 if cols[i].inPeak > topLin { overIn.addRect(CGRect(x: r.L + CGFloat(i) * colW, y: r.top - 3, width: colW + 0.4, height: 3)) }
                 if cols[i].outPeak > topLin { overOut.addRect(CGRect(x: r.L + CGFloat(i) * colW, y: r.top - 3, width: colW + 0.4, height: 3)) }
             }
-            c.fill(overIn, with: .color(Self.inputColor))
-            c.fill(overOut, with: .color(Self.clipColor))
+            if layers.contains(.input) { c.fill(overIn, with: .color(Self.inputColor)) }
+            if layers.contains(.output) { c.fill(overOut, with: .color(Self.outputColor)) }
         }
 
         drawCeiling(c, r)
@@ -445,19 +521,10 @@ struct PlateWaveScreen: View {
         // status: LIVE while audio arrives, HOLD when it stops (paused source), BYPASS
         let status: (String, Color) = bypassed ? ("BYPASS", Self.ceilingColor)
             : (flowing ? ("LIVE", Self.clipColor) : ("HOLD", Self.labelColor))
-        var x0 = tag.maxX + 10
+        let x0 = tag.maxX + 10
         c.fill(Path(CGRect(x: x0, y: y0 - 3, width: 6, height: 6)), with: .color(status.1))
         c.draw(Text(status.0).font(.system(size: 9.5, weight: .semibold)).tracking(1).foregroundColor(Color(hex: 0xd0d3d8)),
                at: CGPoint(x: x0 + 10, y: y0), anchor: .leading)
-        // legend: beside the status on the iPad, on its own row on the iPhone
-        let legendY = r.narrow ? Self.legendRowY : y0
-        x0 = r.narrow ? Self.side : x0 + 62
-        for (color, name) in [(Self.inputColor, "INPUT"), (Self.outputColor, "OUTPUT"), (Self.clipColor, "CLIPPED")] {
-            c.fill(Path(CGRect(x: x0, y: legendY - 3.5, width: 7, height: 7)), with: .color(color))
-            c.draw(Text(name).font(.system(size: 9.5, weight: .medium)).tracking(0.8).foregroundColor(Color(hex: 0xb3b9c2)),
-                   at: CGPoint(x: x0 + 11, y: legendY), anchor: .leading)
-            x0 += 11 + CGFloat(name.count) * 7.2 + 14
-        }
         // CEILING with the parameter's value
         c.draw(Text("CEILING  \(WaveTime.dBFS(ceilingDB)) dBFS").font(.system(size: r.narrow ? 9.5 : 10.5, weight: .medium))
                 .tracking(0.6).foregroundColor(Self.ceilingColor),
