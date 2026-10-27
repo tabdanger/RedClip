@@ -20,6 +20,16 @@ final class FaceModel: ObservableObject {
     }
     @Published private(set) var helpTopic: HelpTopic?
 
+    /// The first-launch tour (HelpTour.swift): nil when it isn't showing, 0 for its welcome card,
+    /// then one step per control. It shows once, in the app only; finishing or skipping it marks it seen.
+    private static let tourKey = "RedClip.TourSeen"
+    @Published var tourStep: Int?
+
+    func endTour() {
+        tourStep = nil
+        UserDefaults.standard.set(true, forKey: Self.tourKey)
+    }
+
     /// Which finish the faceplate shows: RedClip_Standard (red, the default) or RedClip_Platinum. Remembered between launches.
     private static let faceKey = "RedClip.Faceplate"
     @Published var faceplate: Faceplate = Faceplate(rawValue: UserDefaults.standard.string(forKey: FaceModel.faceKey) ?? "") ?? .face1 {
@@ -55,6 +65,7 @@ final class FaceModel: ObservableObject {
         params = ParamStore(shared: state)
         meters = MeterReader(shared: state)
         self.isPlugin = isPlugin
+        if !isPlugin && !UserDefaults.standard.bool(forKey: Self.tourKey) { tourStep = 0 }
     }
 
     func setPowered(_ on: Bool) {

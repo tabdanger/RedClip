@@ -2,10 +2,15 @@ import SwiftUI
 
 // MARK: - Help: the "?" button next to Undo
 //
-// Works the same as Console E's "?" key: it switches help bubbles on and off (remembered between
-// launches). With help on, every control still works normally, and touching it, or hovering over
-// it with a trackpad, mouse or Apple Pencil, pops up a small bubble beside it explaining what it
-// does. The bubble fades 3.5 seconds after it appears. Meters and readouts show theirs when touched.
+// The "?" key switches help mode on and off (remembered between launches). While it is lit, one
+// clear layer over the faceplate takes every touch and every trackpad, mouse or Apple Pencil hover:
+// whatever control is under it gets a small bubble explaining what it does, and the control itself
+// is left alone. The bubble fades 3.5 seconds after it appears. Tap "?" again to switch help off.
+// Finding the control from the layer, rather than from gestures on each control, means it works
+// the same on knobs, buttons, meters and the screen, whatever gestures they have of their own.
+//
+// The first time the app opens, a tour (HelpTour) steps through every knob and button using the
+// same bubbles; it can be skipped and never comes back by itself.
 
 enum HelpTopic: String, CaseIterable {
     case help, presets, ab, undo, power
@@ -57,7 +62,7 @@ enum HelpTopic: String, CaseIterable {
     var text: String {
         switch self {
         case .help:
-            return "Turns these help bubbles on and off. With help on, touch or hover over any control to learn what it does."
+            return "Help mode. While ? is lit, touch or hover over any knob or button and a bubble explains what it does, without changing it. Tap ? again to switch help off and get back to work."
         case .presets:
             return "Step through the presets with the arrows, or tap the name to pick one from the list."
         case .ab:
@@ -126,62 +131,136 @@ enum HelpTopic: String, CaseIterable {
     }
 }
 
-/// Where each control sits, so one bubble can be drawn above whichever is selected.
+/// Where each control sits, so one bubble can be drawn above whichever is selected. A topic can
+/// cover more than one area (the preset arrows and name are all "Presets").
 struct HelpAnchorKey: PreferenceKey {
-    static let defaultValue: [HelpTopic: Anchor<CGRect>] = [:]
-    static func reduce(value: inout [HelpTopic: Anchor<CGRect>], nextValue: () -> [HelpTopic: Anchor<CGRect>]) {
-        value.merge(nextValue()) { $1 }
+    static let defaultValue: [HelpTopic: [Anchor<CGRect>]] = [:]
+    static func reduce(value: inout [HelpTopic: [Anchor<CGRect>]], nextValue: () -> [HelpTopic: [Anchor<CGRect>]]) {
+        value.merge(nextValue()) { $0 + $1 }
     }
 }
 
-/// Marks a control for help. The control keeps working as usual; touching or hovering over it
-/// shows its bubble while help is switched on.
+/// Marks a control for help: records where it is. The help layer over the faceplate does the rest,
+/// so the control's own gestures are untouched.
 struct HelpTarget: ViewModifier {
-    @ObservedObject var face: FaceModel
     let topic: HelpTopic
 
     func body(content: Content) -> some View {
-        content
-            .simultaneousGesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in face.showHelp(topic) }
-                .onEnded { _ in face.helpTouchEnded(topic) })
-            .onHover { inside in
-                if inside { face.showHelp(topic) } else { face.hoverEnded(topic) }
-            }
-            .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [topic: $0] }
+        content.anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [topic: [$0]] }
     }
 }
 
 extension View {
     func helpTarget(_ topic: HelpTopic, _ face: FaceModel) -> some View {
-        modifier(HelpTarget(face: face, topic: topic))
+        modifier(HelpTarget(topic: topic))
     }
 
-    /// Draws the help bubble. Put it on the unscaled design-size container (the faceplate, or the
-    /// faceplate plus the transport strip).
+    /// Draws the help layer, the bubble and the first-launch tour. Put it on the unscaled
+    /// design-size container (the faceplate, or the faceplate plus the transport strip).
     /// `scale` enlarges the bubble for faces drawn at a higher pixel density (the iPhone face).
     func helpBubbles(_ face: FaceModel, scale: CGFloat = 1) -> some View {
         overlayPreferenceValue(HelpAnchorKey.self) { anchors in
             GeometryReader { geo in
-                ZStack(alignment: .topLeading) {
-                    Color.clear
-                    if let topic = face.helpTopic, let anchor = anchors[topic] {
-                        let r = geo[anchor]
-                        let width: CGFloat = 360
-                        let height = HelpBubble.estimatedHeight(topic.text, width: width)
-                        let c = HelpBubble.center(for: r, width: width * scale, height: height * scale, in: geo.size)
-                        HelpBubble(topic: topic)
-                            .frame(width: width)
-                            .scaleEffect(scale)
-                            .position(c)
-                            .transition(.opacity)
-                            .id(topic)
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                .allowsHitTesting(false)
+                HelpLayer(face: face, areas: HelpAreas(anchors.mapValues { $0.map { geo[$0] } }),
+                          size: geo.size, scale: scale)
             }
-            .animation(.easeOut(duration: 0.15), value: face.helpTopic)
+        }
+    }
+}
+
+/// Every help area in the container's coordinates.
+struct HelpAreas {
+    let rects: [HelpTopic: [CGRect]]
+
+    init(_ rects: [HelpTopic: [CGRect]]) { self.rects = rects }
+
+    /// The whole area of a topic, for placing its bubble.
+    func frame(_ topic: HelpTopic) -> CGRect? {
+        guard let first = rects[topic]?.first else { return nil }
+        return rects[topic]!.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    /// The control under a point: the smallest area that holds it, so a button on top of a bigger
+    /// panel wins over the panel.
+    func topic(at p: CGPoint) -> HelpTopic? {
+        var best: (HelpTopic, CGFloat)?
+        for (topic, list) in rects {
+            for r in list where r.contains(p) {
+                let area = r.width * r.height
+                if best == nil || area < best!.1 { best = (topic, area) }
+            }
+        }
+        return best?.0
+    }
+}
+
+/// The help mode catcher, the bubble and the tour.
+struct HelpLayer: View {
+    @ObservedObject var face: FaceModel
+    let areas: HelpAreas
+    let size: CGSize
+    let scale: CGFloat
+    @State private var touched: HelpTopic?
+    @State private var hovered: HelpTopic?
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+            if face.tourStep != nil {
+                HelpTour(face: face, areas: areas, size: size, scale: scale)
+            } else {
+                if face.helpEnabled { catcher }
+                bubble.allowsHitTesting(false)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .animation(.easeOut(duration: 0.15), value: face.helpTopic)
+        .animation(.easeOut(duration: 0.2), value: face.tourStep)
+    }
+
+    /// Help mode: takes the touch or hover instead of the control and shows that control's bubble.
+    private var catcher: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        let t = areas.topic(at: v.location)
+                        if t != touched, let old = touched { face.helpTouchEnded(old) }
+                        touched = t
+                        if let t { face.showHelp(t) }
+                    }
+                    .onEnded { v in
+                        if let t = touched { face.helpTouchEnded(t) }
+                        touched = nil
+                        // tapping "?" again switches help mode off
+                        if let r = areas.frame(.help), r.contains(v.location), r.contains(v.startLocation) {
+                            face.helpEnabled = false
+                        }
+                    }
+            )
+            .onContinuousHover { phase in
+                var t: HelpTopic?
+                if case .active(let p) = phase { t = areas.topic(at: p) }
+                guard t != hovered else { return }
+                if let old = hovered { face.hoverEnded(old) }
+                hovered = t
+                if let t { face.showHelp(t) }
+            }
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private var bubble: some View {
+        if let topic = face.helpTopic, let r = areas.frame(topic) {
+            let width: CGFloat = 360
+            let height = HelpBubble.estimatedHeight(topic.text, width: width)
+            let c = HelpBubble.center(for: r, width: width * scale, height: height * scale, in: size)
+            HelpBubble(topic: topic)
+                .frame(width: width)
+                .scaleEffect(scale)
+                .position(c)
+                .transition(.opacity)
+                .id(topic)
         }
     }
 }
@@ -258,10 +337,7 @@ struct HelpButton: View {
                 .well(radius: 9, lit: face.helpEnabled)
         }
         .buttonStyle(.plain)
-        .onHover { inside in
-            if inside { face.showHelp(.help) } else { face.hoverEnded(.help) }
-        }
-        .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [.help: $0] }
+        .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [.help: [$0]] }
         .accessibilityLabel("Help bubbles")
         .accessibilityValue(face.helpEnabled ? "On" : "Off")
     }
