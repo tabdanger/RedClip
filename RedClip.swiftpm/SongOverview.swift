@@ -12,14 +12,23 @@ import Foundation
 // The output leaves the oversampling filters a few samples after the clip stage, so each summary
 // carries both delays and every layer is filed under the frame its audio came from.
 //
-// Where the audio comes from:
-//   - app: the loaded file. SongAnalyzer runs it through a private ClipDSP (its own SharedState,
-//     never the live one) with the current settings, in the background; a settings change marks
-//     the result stale and analyses again once the controls settle; a newer job stops an older one;
+// Live as the knobs turn (like FabFilter's displays): every bin also keeps the untouched input's
+// extremes, and SongModel runs those through the same curves the DSP uses (Input, Drive, Red,
+// the clipper, Broil, Wet / Dry, Output, Unity) with the current settings. Each of those stages
+// works sample by sample and keeps the order of levels, so a bin's loudest input sample is also
+// its loudest sample at every later point, and the model gives that sample's real values. The
+// picture follows a knob on the very next frame, for the whole song at once. What the model
+// leaves out is small and needs the full DSP: the oversampling filters (a little inter-sample
+// overshoot) and Fire and Box Tone (about 1 dB of top-end tilt at most). So:
+//   - app: the loaded file's peaks come first (a fraction of a second), then SongAnalyzer runs
+//     the file through a private ClipDSP (its own SharedState, never the live one) once the
+//     controls have been still for a moment. Columns it has covered with the current settings
+//     are drawn from that exact pass; while a knob moves they are drawn by the model. A newer
+//     job stops an older one;
 //   - plug-in: the host owns the song, so Red Clip only knows the audio it has been handed. The
-//     audio thread writes 64-frame summaries into CaptureRing, stamped with the host's sample
-//     position; the UI folds them into the overview. Places never played stay unknown, and
-//     audio captured under other settings is drawn as such.
+//     audio thread writes 64-frame summaries (with the untouched input) into CaptureRing,
+//     stamped with the host's sample position; the UI folds them into the overview. Places
+//     never played stay unknown; everything played follows the knobs through the model.
 
 /// Where SharedState.songFrame comes from.
 enum SongClock: Int {
@@ -54,6 +63,7 @@ struct CaptureRecord {
     var clipDelay: Int      // how many frames the clip stage runs behind the input
     var outDelay: Int       // and the output
     var stamp: Int          // SongStamp of the settings it was processed with
+    var rawHi: Float, rawLo: Float      // the untouched input's extremes (before any control)
     var preHi: Float, postHi: Float     // most positive sample into the clipper, and the clipper's output for it
     var preLo: Float, postLo: Float     // most negative, likewise
     var outHi: Float, outLo: Float      // final output extremes (either channel)
@@ -71,7 +81,7 @@ final class CaptureRing: @unchecked Sendable {
     let capacity: Int
     private let mask: Int
     private let frame, frames, delays, stamp: AtomicInts
-    private let preHi, postHi, preLo, postLo, outHi, outLo, reduction: AtomicFloats
+    private let rawHi, rawLo, preHi, postHi, preLo, postLo, outHi, outLo, reduction: AtomicFloats
     let written = AtomicInt(0)                  // records written so far (never wraps), published
 
     init(capacity wanted: Int) {
@@ -81,6 +91,7 @@ final class CaptureRing: @unchecked Sendable {
         mask = c - 1
         frame = AtomicInts(count: c); frames = AtomicInts(count: c)
         delays = AtomicInts(count: c); stamp = AtomicInts(count: c)
+        rawHi = AtomicFloats(count: c); rawLo = AtomicFloats(count: c)
         preHi = AtomicFloats(count: c); postHi = AtomicFloats(count: c)
         preLo = AtomicFloats(count: c); postLo = AtomicFloats(count: c)
         outHi = AtomicFloats(count: c); outLo = AtomicFloats(count: c)
@@ -89,17 +100,18 @@ final class CaptureRing: @unchecked Sendable {
 
     deinit {
         for a in [frame, frames, delays, stamp] { a.deallocate() }
-        for a in [preHi, postHi, preLo, postLo, outHi, outLo, reduction] { a.deallocate() }
+        for a in [rawHi, rawLo, preHi, postHi, preLo, postLo, outHi, outLo, reduction] { a.deallocate() }
         written.deallocate()
     }
 
     /// Audio thread (the only writer).
     @inline(__always) func push(frame f: Int, frames n: Int, delays d: Int, stamp s: Int,
-                                preHi a: Float, postHi b: Float, preLo c: Float, postLo e: Float,
+                                rawHi x: Float, rawLo z: Float, preHi a: Float, postHi b: Float, preLo c: Float, postLo e: Float,
                                 outHi g: Float, outLo h: Float, reductionDB r: Float) {
         let w = written.value
         let i = w & mask
         frame[i] = f; frames[i] = n; delays[i] = d; stamp[i] = s
+        rawHi[i] = x; rawLo[i] = z
         preHi[i] = a; postHi[i] = b; preLo[i] = c; postLo[i] = e
         outHi[i] = g; outLo[i] = h; reduction[i] = r
         written.publish(w &+ 1)
@@ -120,7 +132,7 @@ final class CaptureRing: @unchecked Sendable {
             let i = k & mask
             let d = delays[i]
             batch.append(CaptureRecord(frame: frame[i], frames: frames[i], clipDelay: d & 0xff, outDelay: (d >> 8) & 0xff,
-                                       stamp: stamp[i], preHi: preHi[i], postHi: postHi[i], preLo: preLo[i], postLo: postLo[i],
+                                       stamp: stamp[i], rawHi: rawHi[i], rawLo: rawLo[i], preHi: preHi[i], postHi: postHi[i], preLo: preLo[i], postLo: postLo[i],
                                        outHi: outHi[i], outLo: outLo[i], reductionDB: reduction[i]))
         }
         // anything the writer may have started overwriting while it was copied is dropped
@@ -153,8 +165,9 @@ final class SongOverview: @unchecked Sendable {
     private(set) var outHi: [Float], outLo: [Float]          // final output
     private(set) var reduction: [Float]                      // most gain reduction (dB)
     private(set) var stamp: [Int]                            // SongStamp; 0 = never received
-    // the untouched source (app only, before any control): drawn while the first analysis runs
-    private(set) var srcHi: [Float] = [], srcLo: [Float] = []
+    // the untouched input (before any control), which SongModel turns into every layer live
+    private(set) var srcHi: [Float], srcLo: [Float]
+    private(set) var srcKnown: [Bool]
 
     init(totalFrames: Int, sampleRate: Double) {
         self.totalFrames = max(0, totalFrames)
@@ -164,11 +177,13 @@ final class SongOverview: @unchecked Sendable {
         let z = [Float](repeating: 0, count: n)
         preHi = z; postHi = z; preLo = z; postLo = z; outHi = z; outLo = z; reduction = z
         stamp = [Int](repeating: SongStamp.none, count: n)
+        srcHi = z; srcLo = z
+        srcKnown = [Bool](repeating: false, count: n)
     }
 
     /// Frames the bins cover now.
     var extent: Int { framesPerBin * Self.binCount }
-    var hasSource: Bool { !srcHi.isEmpty }
+    var hasSource: Bool { srcKnown.contains(true) }
 
     // MARK: Filling
 
@@ -181,6 +196,11 @@ final class SongOverview: @unchecked Sendable {
             while end > extent && framesPerBin < Int.max / (4 * Self.binCount) { grow() }
         }
         capturedEnd = max(capturedEnd, min(end, totalFrames > 0 ? totalFrames : end))
+        for b in bins(from: r.frame, count: r.frames) {
+            if r.rawHi.isFinite { srcHi[b] = max(srcHi[b], r.rawHi) }
+            if r.rawLo.isFinite { srcLo[b] = min(srcLo[b], r.rawLo) }
+            srcKnown[b] = true
+        }
         for b in bins(from: r.frame - r.clipDelay, count: r.frames) {
             claim(b, r.stamp)
             if r.preHi > preHi[b] { preHi[b] = r.preHi; postHi[b] = r.postHi }
@@ -198,6 +218,8 @@ final class SongOverview: @unchecked Sendable {
     func setSource(hi: [Float], lo: [Float]) {
         guard hi.count == Self.binCount, lo.count == Self.binCount else { return }
         srcHi = hi; srcLo = lo
+        let used = totalFrames > 0 ? min(Self.binCount, (totalFrames + framesPerBin - 1) / framesPerBin) : Self.binCount
+        for b in 0..<Self.binCount { srcKnown[b] = b < used }
     }
 
     /// Bins holding frames [from, from + count), clamped to the timeline.
@@ -236,17 +258,24 @@ final class SongOverview: @unchecked Sendable {
             preHi[i] = v.0; postHi[i] = v.1; preLo[i] = v.2; postLo[i] = v.3
             outHi[i] = v.4; outLo[i] = v.5; reduction[i] = v.6
             stamp[i] = s
+            srcHi[i] = max(srcHi[a], srcHi[b]); srcLo[i] = min(srcLo[a], srcLo[b])
+            srcKnown[i] = srcKnown[a] || srcKnown[b]
         }
-        for i in half..<Self.binCount { clear(i) }
+        for i in half..<Self.binCount {
+            clear(i)
+            srcHi[i] = 0; srcLo[i] = 0; srcKnown[i] = false
+        }
         framesPerBin *= 2
     }
 
     // MARK: Reading for the screen
 
     /// The timeline cut into `count` columns over [0, timeline) frames, each holding the extremes
-    /// of every bin it covers (transients kept). O(bins + columns), so it costs the same for a
-    /// 10-second loop as for an hour; the screen calls it only when the data or its width changes.
-    func columns(_ count: Int, timeline: Int, current: Int) -> SongColumns {
+    /// of every bin it covers (transients kept). A column the exact DSP pass covered with the
+    /// `current` settings is drawn from it; any other column with input behind it is drawn by
+    /// `model` from that input, so it follows the knobs at once. O(bins + columns): cheap enough
+    /// to redo on every knob move.
+    func columns(_ count: Int, timeline: Int, current: Int, model: SongModel? = nil) -> SongColumns {
         var out = SongColumns(count: max(1, count))
         let n = out.count
         let span = max(1, timeline)
@@ -256,32 +285,89 @@ final class SongOverview: @unchecked Sendable {
             let b0 = f0 / framesPerBin
             if b0 >= Self.binCount { break }
             let b1 = min((f1 - 1) / framesPerBin, Self.binCount - 1)
-            var known = false, stale = false
+            var known = false, other = false, heard = false
             var pHi: Float = 0, qHi: Float = 0, pLo: Float = 0, qLo: Float = 0
             var oHi: Float = 0, oLo: Float = 0, sHi: Float = 0, sLo: Float = 0
             for b in b0...b1 {
-                if hasSource { sHi = max(sHi, srcHi[b]); sLo = min(sLo, srcLo[b]) }
+                if srcKnown[b] { heard = true; sHi = max(sHi, srcHi[b]); sLo = min(sLo, srcLo[b]) }
                 let s = stamp[b]
                 if s == SongStamp.none { continue }
                 known = true
-                if s != current { stale = true }
+                if s != current { other = true }
                 if preHi[b] > pHi { pHi = preHi[b]; qHi = postHi[b] }
                 if preLo[b] < pLo { pLo = preLo[b]; qLo = postLo[b] }
                 oHi = max(oHi, outHi[b]); oLo = min(oLo, outLo[b])
             }
-            out.state[c] = known ? (stale ? .stale : .current) : .unknown
-            out.preHi[c] = pHi; out.postHi[c] = qHi; out.preLo[c] = pLo; out.postLo[c] = qLo
-            out.outHi[c] = oHi; out.outLo[c] = oLo
             out.srcHi[c] = sHi; out.srcLo[c] = sLo
+            if known && !other {
+                out.state[c] = .exact
+                out.preHi[c] = pHi; out.postHi[c] = qHi; out.preLo[c] = pLo; out.postLo[c] = qLo
+                out.outHi[c] = oHi; out.outLo[c] = oLo
+            } else if heard, let model {
+                let hi = model.layers(sHi), lo = model.layers(sLo)
+                out.state[c] = .live
+                out.preHi[c] = hi.pre; out.postHi[c] = hi.post; out.preLo[c] = lo.pre; out.postLo[c] = lo.post
+                out.outHi[c] = max(hi.out, lo.out, 0); out.outLo[c] = min(hi.out, lo.out, 0)
+            } else {
+                out.state[c] = .unknown
+            }
         }
         return out
+    }
+}
+
+/// The DSP's sample-by-sample stages with one set of settings (ClipDSP.process's targets), for
+/// drawing the SONG layers live from the untouched input. Uses the very same curves (Curves), so
+/// the clipping it shows is the clip mode's real shape. Left out, because they need the filters:
+/// oversampling's inter-sample overshoot, Fire and Box Tone (each at most about 1 dB).
+struct SongModel {
+    let gIn: Float, gDrive: Float, gOut: Float, c: Float, knee: Float
+    let redOn: Bool, redG: Float, redK: Float, unityGain: Float
+    let broilOn: Bool, broilA: Float, broilNorm: Float
+    let wet: Float, dry: Float, delta: Bool, bypass: Bool
+
+    init(_ p: AtomicFloats) {
+        gIn = dbToGain(p[Param.inputDB.rawValue])
+        gDrive = dbToGain(p[Param.driveDB.rawValue])
+        gOut = dbToGain(p[Param.outputDB.rawValue])
+        c = dbToGain(p[Param.ceilingDB.rawValue])
+        knee = Curves.knee(Int(p[Param.clipMode.rawValue].rounded()))
+        let redDB = p[Param.gold.rawValue] / 100 * Curves.goldMaxDB(classic: p[Param.goldMode.rawValue] > 0.5)
+        redOn = redDB > 0.01
+        let shape = Curves.redShape(redDB)
+        redG = shape.g; redK = shape.k
+        unityGain = redOn && p[Param.unity.rawValue] > 0.5 ? dbToGain(-redDB) : 1
+        let b = p[Param.broil.rawValue] / 100
+        broilOn = b > 0.0005
+        broilA = b * Curves.broilMax
+        broilNorm = broilOn ? 1 / tanh(broilA) : 1
+        let levels = ClipDSP.mixLevels(p)
+        wet = levels.wet; dry = levels.dry
+        delta = p[Param.delta.rawValue] > 0.5
+        bypass = p[Param.bypass.rawValue] > 0.5
+    }
+
+    /// One untouched input sample -> (into the clipper, out of the clipper, final output).
+    func layers(_ raw: Float) -> (pre: Float, post: Float, out: Float) {
+        guard raw.isFinite else { return (0, 0, 0) }
+        let x = raw * gIn
+        var pre = x * gDrive
+        if redOn { pre = Curves.red(pre, ceiling: c, g: redG, k: redK) }
+        let post = Curves.clip(pre, ceiling: c, knee: knee)
+        var w = broilOn ? Curves.broil(post, ceiling: c, a: broilA, norm: broilNorm) : post
+        w = min(max(w, -c), c)
+        var out = delta ? (w - x * gDrive) * gOut : (w * wet + x * dry) * gOut
+        out *= unityGain
+        if bypass { out = raw }
+        return (pre, post, out)
     }
 }
 
 /// What the SONG screen draws: one entry per display column. A value type, so the waveform is
 /// redrawn only when these change, never just because the playhead moved.
 struct SongColumns: Equatable {
-    enum State: UInt8 { case unknown, current, stale }
+    /// exact: from the full DSP with the current settings; live: SongModel on the input.
+    enum State: UInt8 { case unknown, exact, live }
     var count: Int
     var preHi: [Float], postHi: [Float], preLo: [Float], postLo: [Float]
     var outHi: [Float], outLo: [Float]

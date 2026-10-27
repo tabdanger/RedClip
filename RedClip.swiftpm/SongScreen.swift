@@ -36,10 +36,10 @@ extension EnvironmentValues {
 
 /// Keeps the SONG overview up to date on the main thread. The heavy work runs elsewhere:
 ///   - app: SongAnalyzer, on a background task, only while the SONG screen is showing. The
-///     untouched file is summarised first (seconds), then the file goes through a private
-///     ClipDSP with the current settings. A settings change marks the result stale at once
-///     and starts a new analysis 0.3 s after the controls stop moving; a newer job stops an
-///     older one;
+///     untouched file is summarised first (a fraction of a second); from then on every layer
+///     follows the knobs live (SongModel). Once the controls have been still for 0.3 s the
+///     file also goes through a private ClipDSP, quietly, and its exact result replaces the
+///     model's where it differs; a newer job stops an older one;
 ///   - plug-in: ten times a second it folds what the audio thread captured into the overview.
 /// It never touches the audio thread's state beyond reading the capture ring and atomics.
 @MainActor
@@ -49,8 +49,6 @@ final class SongOverviewStore: ObservableObject {
 
     /// Bumps whenever the picture's data (or the settings it is compared against) changes.
     @Published private(set) var version = 0
-    /// 0...1 while the app analyses the file; nil otherwise.
-    @Published private(set) var progress: Double?
     private(set) var overview: SongOverview?
     /// The SONG screen is on screen. The app only analyses while it is.
     var isShowing = false {
@@ -84,8 +82,6 @@ final class SongOverviewStore: ObservableObject {
     }
 
     var currentStamp: Int { SongStamp.of(shared.params) }
-    var hasProcessed: Bool { processedStamp != SongStamp.none }
-    var isStale: Bool { hasProcessed && processedStamp != currentStamp }
     var sampleRate: Double { overview?.sampleRate ?? Double(max(shared.sampleRate.value, 8_000)) }
 
     /// Frames across the screen: the file's length, or (plug-in) a round length holding
@@ -102,7 +98,6 @@ final class SongOverviewStore: ObservableObject {
         overview = nil
         processedStamp = SongStamp.none
         jobStamp = SongStamp.none
-        progress = 0
         memo = nil
         version &+= 1
         let g = generation
@@ -115,7 +110,6 @@ final class SongOverviewStore: ObservableObject {
             let o = SongOverview(totalFrames: a.frames, sampleRate: a.sampleRate)
             o.setSource(hi: found.hi, lo: found.lo)
             overview = o
-            progress = nil
             memo = nil
             version &+= 1
             tick()
@@ -128,22 +122,16 @@ final class SongOverviewStore: ObservableObject {
         let mine = generation.value &+ 1
         generation.value = mine
         jobStamp = stamp
-        progress = 0
         let g = generation
         let src = source
         Task {
             let made = await Task.detached(priority: .utility) { () -> SongOverview? in
-                let o = SongAnalyzer.preview(a, settings: settings, stop: { g.value != mine }) { p in
-                    Task { @MainActor [weak self] in
-                        if g.value == mine { self?.progress = p }
-                    }
-                }
+                let o = SongAnalyzer.preview(a, settings: settings, stop: { g.value != mine })
                 if let o, let src { o.setSource(hi: src.hi, lo: src.lo) }
                 return o
             }.value
             guard generation.value == mine else { return }     // a newer job (or file) took over
             jobStamp = SongStamp.none
-            progress = nil
             if let made {
                 overview = made
                 processedStamp = stamp
@@ -161,7 +149,7 @@ final class SongOverviewStore: ObservableObject {
             seenStamp = now
             seenAt = Date()
             memo = nil
-            version &+= 1                                  // stale layers redraw dimmed straight away
+            version &+= 1
         }
         if isPlugin { drainCapture(); return }
         // app: analyse again once the settings have been still for 0.3 s
@@ -203,31 +191,24 @@ final class SongOverviewStore: ObservableObject {
     func columns(_ count: Int) -> SongColumns {
         guard let o = overview else { return .empty }
         let timeline = timelineFrames
-        let key = [version, count, timeline]
+        let stamp = currentStamp
+        let key = [version, count, timeline, stamp]          // a knob move redraws on the next frame
         if let memo, memo.key == key { return memo.columns }
-        let c = o.columns(count, timeline: timeline, current: currentStamp)
+        let c = o.columns(count, timeline: timeline, current: stamp, model: SongModel(shared.params))
         memo = (key, c)
         return c
     }
 
     /// The status shown beside the legend: (text, needs attention).
-    func badge(anyStale: Bool) -> (String, Bool)? {
+    func badge() -> (String, Bool)? {
         if isPlugin {
-            if anyStale { return ("CAPTURED · OLDER SETTINGS", true) }
             switch clock {
             case .host: return ("CAPTURED AUDIO", false)
             case .relative: return ("CAPTURED · NO HOST TIME", true)
             default: return ("WAITING FOR AUDIO", false)
             }
         }
-        if let p = progress {
-            let pct = Int((p * 100).rounded())
-            if overview == nil { return ("READING FILE", true) }
-            return (hasProcessed ? "UPDATING \(pct)%" : "ANALYZING \(pct)%", true)
-        }
-        if !hasProcessed { return ("ANALYZING", true) }
-        if isStale { return ("UPDATING", true) }
-        return ("FULL FILE · CURRENT", false)
+        return overview == nil ? ("READING FILE", true) : ("FULL FILE", false)
     }
 }
 
@@ -296,6 +277,9 @@ struct PlateSongScreen: View {
     var zoom: MeterZoom = .full
     var isPlugin = false
     var scrub: ((SongScrub) -> Void)?
+    /// SongStamp of the settings: any knob, switch or automation change makes this view redraw
+    /// the waveform on the next frame (live, like a plug-in's analyser).
+    var settings: Int = 0
     @Environment(\.scenePhase) private var phase
     @Environment(\.plateScale) private var plateScale
     @Environment(\.displayScale) private var displayScale
@@ -326,15 +310,15 @@ struct PlateSongScreen: View {
             // about one column per real pixel of the glass, whatever size it is drawn at
             let pixels = plotW * s * max(plateScale, 0.05) * max(displayScale, 1)
             let count = Int(min(max(pixels.rounded(), 64), 2048))
+            let _ = settings
             let cols = store.columns(count)
-            let anyStale = cols.state.contains(.stale)
             ZStack(alignment: .topLeading) {
                 SongWaveCanvas(columns: cols, ceilingDB: ceilingDB, zoom: zoom, width: W,
                                hasData: store.overview != nil, isPlugin: isPlugin,
                                timelineSeconds: Double(store.timelineFrames) / store.sampleRate)
                     .equatable()
                     .frame(width: W, height: Self.H)
-                legend(W, badge: store.badge(anyStale: anyStale))
+                legend(W, badge: store.badge())
                 TimelineView(.animation(minimumInterval: 1 / 30, paused: !live)) { tl in
                     Canvas { g, _ in
                         _ = tl.date
@@ -521,7 +505,7 @@ struct SongWaveCanvas: View, Equatable {
         var unknown = Path()
         var runStart = -1
         for i in 0...n {
-            let isUnknown = i < n && columns.state[i] == .unknown && !(columns.srcHi[i] > 0 || columns.srcLo[i] < 0)
+            let isUnknown = i < n && columns.state[i] == .unknown
             if isUnknown && runStart < 0 { runStart = i }
             if !isUnknown && runStart >= 0 {
                 unknown.addRect(CGRect(x: x(runStart), y: top, width: x(i) - x(runStart), height: bottom - top))
@@ -540,43 +524,25 @@ struct SongWaveCanvas: View, Equatable {
             hatch.stroke(lines, with: .color(Color(hex: 0x1a1b1e)), lineWidth: 1)
         }
 
-        // layers, back to front
-        var srcBand = Path(), inBand = Path(), inStale = Path()
-        var outBand = Path(), outStale = Path(), cut = Path(), cutStale = Path()
-        for i in 0..<n {
+        // layers, back to front (exact and live columns look the same: both are the current settings)
+        var inBand = Path(), outBand = Path(), cut = Path()
+        for i in 0..<n where columns.state[i] != .unknown {
             let x0 = x(i), w = colW + 0.35
-            switch columns.state[i] {
-            case .unknown:
-                // app, before the first analysis: the untouched file in grey
-                if columns.srcHi[i] > 0 || columns.srcLo[i] < 0 {
-                    srcBand.addRect(band(x0, w, y(columns.srcHi[i]), y(columns.srcLo[i]), 1))
-                }
-            case .current, .stale:
-                let stale = columns.state[i] == .stale
-                let pHi = columns.preHi[i], pLo = columns.preLo[i]
-                let qHi = columns.postHi[i], qLo = columns.postLo[i]
-                let r1 = band(x0, w, y(pHi), y(pLo), 1)
-                if stale { inStale.addRect(r1) } else { inBand.addRect(r1) }
-                let r2 = band(x0, w, y(columns.outHi[i]), y(columns.outLo[i]), 1)
-                if stale { outStale.addRect(r2) } else { outBand.addRect(r2) }
-                // what the clipper took off: from its output up to its input, for the same samples
-                if pHi - qHi > 1e-5 {
-                    let r = CGRect(x: x0, y: y(pHi), width: w, height: max(0.6, y(qHi) - y(pHi)))
-                    if stale { cutStale.addRect(r) } else { cut.addRect(r) }
-                }
-                if qLo - pLo > 1e-5 {
-                    let r = CGRect(x: x0, y: y(qLo), width: w, height: max(0.6, y(pLo) - y(qLo)))
-                    if stale { cutStale.addRect(r) } else { cut.addRect(r) }
-                }
+            let pHi = columns.preHi[i], pLo = columns.preLo[i]
+            let qHi = columns.postHi[i], qLo = columns.postLo[i]
+            inBand.addRect(band(x0, w, y(pHi), y(pLo), 1))
+            outBand.addRect(band(x0, w, y(columns.outHi[i]), y(columns.outLo[i]), 1))
+            // what the clipper took off: from its output up to its input, for the same samples
+            if pHi - qHi > 1e-5 {
+                cut.addRect(CGRect(x: x0, y: y(pHi), width: w, height: max(0.6, y(qHi) - y(pHi))))
+            }
+            if qLo - pLo > 1e-5 {
+                cut.addRect(CGRect(x: x0, y: y(qLo), width: w, height: max(0.6, y(pLo) - y(qLo))))
             }
         }
-        c.fill(srcBand, with: .color(PlateSongScreen.inputColor.opacity(0.75)))
         c.fill(inBand, with: .color(PlateSongScreen.inputColor))
-        c.fill(inStale, with: .color(PlateSongScreen.inputColor.opacity(0.45)))
         c.fill(outBand, with: .color(PlateSongScreen.outputColor.opacity(0.92)))
-        c.fill(outStale, with: .color(PlateSongScreen.outputColor.opacity(0.35)))
         c.fill(cut, with: .color(PlateSongScreen.clipColor.opacity(0.82)))
-        c.fill(cutStale, with: .color(PlateSongScreen.clipColor.opacity(0.32)))
 
         // ceiling: the clip stage's +/- threshold on the waveform's own scale
         let ceil = zoom.position(ceilingDB) * k
