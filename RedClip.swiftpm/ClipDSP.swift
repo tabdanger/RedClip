@@ -68,6 +68,7 @@ final class SharedState: @unchecked Sendable {
     let power: AtomicInt         // 0 = power button off (plug-in passes audio through untouched)
     let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
     let clipClock = ClipClockState()   // biggest clip and where in the song it happened (ClipClock.swift)
+    let spectrum = SpectrumFeed()      // the SPECTRUM screen's sample copies (Spectrum.swift)
 
     // SONG view (SongOverview.swift). The audio thread summarises the clip stage and the final
     // output into `capture` every 64 frames, stamped with the timeline position; the UI folds
@@ -644,6 +645,13 @@ final class ClipDSP: @unchecked Sendable {
         let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy), gBroil = ramps(.broil)
         let ks = smooth
         var ringPos = shared.ringTotal.value          // only this thread writes it
+        // SPECTRUM taps (Spectrum.swift), only while the screen shows them. The input copy goes
+        // in as many slots ahead as the oversampling filters delay the wet branch, so each slot
+        // holds an input and an output frame from the same moment.
+        let feed = shared.spectrum
+        let tapOn = feed.on.value != 0
+        var tapPos = feed.written.value                // only this thread writes it
+        let tapAhead = factor == 1 ? 0 : (factor == 2 ? 4 : 5)
 
         for n in 0..<frames {
             sIn += gIn ? dIn : ks * (tIn - sIn); sOut += gOut ? dOut : ks * (tOut - sOut)
@@ -678,6 +686,7 @@ final class ClipDSP: @unchecked Sendable {
             var raws: (Float, Float) = (0, 0)
             var bigPre: Float = 0, bigPost: Float = 0       // clip stage, the channel hit harder
             var xs: (Float, Float) = (0, 0), outs: (Float, Float) = (0, 0)
+            var taps: (Float, Float) = (0, 0), wets: (Float, Float) = (0, 0)   // SPECTRUM input / output
 
             for chIdx in 0..<2 {
                 let s = ch[chIdx]
@@ -687,6 +696,7 @@ final class ClipDSP: @unchecked Sendable {
                 let ax = abs(x)
                 if chIdx == 0 { inPeak.0 = max(inPeak.0, ax) } else { inPeak.1 = max(inPeak.1, ax) }
                 let xd = x * sDrive               // drive pushes into the clipper only
+                if chIdx == 0 { taps.0 = xd } else { taps.1 = xd }    // SPECTRUM INPUT tap
 
                 // --- oversampled nonlinear section ---
                 var wet: Float = 0, ref: Float = 0
@@ -711,6 +721,7 @@ final class ClipDSP: @unchecked Sendable {
 
                 // anti-overshoot: filter ringing after downsampling can't poke past the ceiling
                 wet = min(max(wet, -c), c)
+                if chIdx == 0 { wets.0 = wet } else { wets.1 = wet }  // SPECTRUM OUTPUT tap (before Wet / Dry)
 
                 var out: Float
                 if delta {
@@ -761,6 +772,14 @@ final class ClipDSP: @unchecked Sendable {
             shared.meterOutL[slot] = outs.0; shared.meterOutR[slot] = outs.1
             ringPos = total &+ 1
 
+            if tapOn {
+                feed.inL[(tapPos &+ tapAhead) & SpectrumFeed.mask] = taps.0
+                feed.inR[(tapPos &+ tapAhead) & SpectrumFeed.mask] = taps.1
+                feed.outL[tapPos & SpectrumFeed.mask] = wets.0
+                feed.outR[tapPos & SpectrumFeed.mask] = wets.1
+                tapPos &+= 1
+            }
+
             // loudness: 100 ms blocks into the BS.1770 meters
             accIn += Double(kIn); accOut += Double(kOut)
             lufsCount += 1
@@ -793,6 +812,7 @@ final class ClipDSP: @unchecked Sendable {
 
         // publish this block's samples (the UI acquires the count before reading them)
         shared.ringTotal.publish(ringPos)
+        if tapOn { feed.written.publish(tapPos) }
         // a summary never runs on into the next call, which may start somewhere else on the timeline
         if capturing && tickFrames > 0 { flushTick() }
 

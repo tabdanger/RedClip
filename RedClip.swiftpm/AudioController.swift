@@ -66,14 +66,6 @@ final class AudioController: ObservableObject {
         face.loadSample = { [weak self] url in self?.load(url: url) }
         face.loadDemo = { [weak self] in self?.loadDemo() }
         face.clipClockReset = { [weak self] in self?.startClipClockScan() }
-        face.songScrub = { [weak self] event in
-            guard let self else { return }
-            switch event {
-            case .began: self.beginScrub()
-            case .moved(let fraction): self.seek(to: fraction)
-            case .ended: self.endScrub()
-            }
-        }
         // a setting that feeds the clipper changed: scan the file again once it settles
         Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.rescanIfSettingsChanged() }
@@ -145,7 +137,7 @@ final class AudioController: ObservableObject {
         let target = min(b.frames - 1, max(0, Int(fraction * Double(b.frames))))
         seekRequest.value = target
         playhead.value = target                      // so the bar follows the finger straight away
-        shared.songFrame.value = target              // and the SONG playhead jumps there, no sweep
+        shared.songFrame.value = target              // and the elapsed time jumps there
     }
 
     /// Stopped (power off, new audio): the screen starts again from a flat line. Paused
@@ -212,12 +204,10 @@ final class AudioController: ObservableObject {
         ph.value = 0          // the engine is stopped here, so nothing renders while these reset
         clearScope()
         seek.value = -1
-        // the SONG screen's clock: frames into this file, published by the render block
+        // the screen's elapsed time: frames into this file, published by the render block
         shared.songFrame.value = 0
         shared.songTotal.value = b.frames
         shared.songClock.value = SongClock.file.rawValue
-        face.song.load(SongAudio(left: UnsafePointer(b.left), right: UnsafePointer(b.right),
-                                 frames: b.frames, sampleRate: b.sampleRate, owner: b))
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: b.sampleRate, channels: 2) else { return }
         let node = AudioController.makeSourceNode(format: fmt, buffer: b, dsp: dsp, playhead: ph, playFlag: flag, seek: seek,
@@ -278,7 +268,7 @@ final class AudioController: ObservableObject {
                 done += n
             }
             ph.value = pos
-            songFrame.value = pos            // the SONG playhead: the audio's own position, loops included
+            songFrame.value = pos            // elapsed time on the screen: the audio's own position, loops included
             return noErr
         }
     }
