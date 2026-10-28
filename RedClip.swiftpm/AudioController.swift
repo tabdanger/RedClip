@@ -301,7 +301,8 @@ final class AudioController: ObservableObject {
 
     // MARK: Export
 
-    /// Renders the whole file through the current settings to a 24-bit WAV, off the main thread.
+    /// Renders the whole file through the current settings to a 24-bit WAV, off the main thread,
+    /// the same length as the original and lined up with it to the sample.
     func export() {
         guard let b = buffer else { return }
         isBusy = true
@@ -334,13 +335,28 @@ final class AudioController: ObservableObject {
                     guard let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
                                                      frameCapacity: AVAudioFrameCount(chunk)),
                           let out = pcm.floatChannelData else { throw LoadError.format }
-                    var pos = 0
-                    while pos < b.frames {
-                        let n = min(chunk, b.frames - pos)
-                        dsp.process(inL: b.left + pos, inR: b.right + pos, outL: out[0], outR: out[1], frames: n)
-                        pcm.frameLength = AVAudioFrameCount(n)
-                        try file.write(from: pcm)
-                        pos += n
+                    // Line the export up with the original sample for sample: the oversampling
+                    // filters delay the output by `lag` frames, so run `lag` frames of silence
+                    // past the end and drop the first `lag` frames that come out.
+                    let lag = ClipDSP.latencyFrames(oversampling: state[.oversampling])
+                    let zeros = [Float](repeating: 0, count: chunk)
+                    var pos = 0, skip = lag
+                    try zeros.withUnsafeBufferPointer { z in
+                        while pos < b.frames + lag {
+                            let n = pos < b.frames ? min(chunk, b.frames - pos) : min(chunk, b.frames + lag - pos)
+                            let inL = pos < b.frames ? UnsafePointer(b.left + pos) : z.baseAddress!
+                            let inR = pos < b.frames ? UnsafePointer(b.right + pos) : z.baseAddress!
+                            dsp.process(inL: inL, inR: inR, outL: out[0], outR: out[1], frames: n)
+                            pos += n
+                            let drop = min(skip, n)
+                            skip -= drop
+                            guard n > drop else { continue }
+                            if drop > 0 {
+                                for c in 0..<2 { for i in 0..<(n - drop) { out[c][i] = out[c][i + drop] } }
+                            }
+                            pcm.frameLength = AVAudioFrameCount(n - drop)
+                            try file.write(from: pcm)
+                        }
                     }
                     return .success(url)
                 } catch {

@@ -629,6 +629,12 @@ final class ClipDSP: @unchecked Sendable {
     /// sample, landing on it at the block's last sample (the render cuts ramps into short
     /// blocks), so the host's ramp comes through with its exact shape and length, no lag.
     /// Everything else uses the 15 ms smoother, which keeps knob moves click-free.
+    /// How many frames the output trails the input at an Oversampling setting (0 / 1 / 2 =
+    /// 1x / 2x / 4x), not bypassed: the oversampling filters' delay to the nearest frame.
+    static func latencyFrames(oversampling: Float) -> Int {
+        [0, 4, 5][Int(oversampling.rounded()).clamped(0, 2)]
+    }
+
     func process(inL: UnsafePointer<Float>, inR: UnsafePointer<Float>,
                  outL: UnsafeMutablePointer<Float>, outR: UnsafeMutablePointer<Float>, frames: Int,
                  gliding: UInt32 = 0) {
