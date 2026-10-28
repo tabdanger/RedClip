@@ -125,7 +125,7 @@ enum HelpTopic: String, CaseIterable {
         case .demo:
             return "Loads the built-in drum loop so you can try Red Clip straight away."
         case .export:
-            return "Renders the whole file through your current settings to a 24-bit WAV you can save or share."
+            return "Renders the whole file through your current settings to a 24-bit WAV you can save or share. It is the same length as the original and lines up with it sample for sample."
         case .clipClock:
             return "The loudest point of your original audio and when it happens, measured before Input, Drive or any other control, so turning knobs never changes or restarts it. In the app it reads the whole file the moment it loads; tap the time to jump playback there. In a DAW it follows playback, so play the song through; the arrow starts a new pass."
         }

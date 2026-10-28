@@ -66,6 +66,22 @@ final class WaveTapTests: XCTestCase {
         }
     }
 
+    func testLatencyFramesIsTheOutputsDelay() {
+        // what export trims off the front so the file lines up with the original
+        for os: Float in [0, 1, 2] {
+            let (_, dsp) = make([.oversampling: os, .ceilingDB: 0])
+            var x = [Float](repeating: 0, count: 4096)
+            for i in 2000..<x.count { x[i] = 0.1 }
+            let out = UnsafeMutablePointer<Float>.allocate(capacity: 2 * x.count)
+            defer { out.deallocate() }
+            x.withUnsafeBufferPointer { b in
+                dsp.process(inL: b.baseAddress!, inR: b.baseAddress!, outL: out, outR: out + x.count, frames: x.count)
+            }
+            let first = (0..<x.count).first { out[$0] > 0.05 }
+            XCTAssertEqual(first, 2000 + ClipDSP.latencyFrames(oversampling: os), "oversampling \(os)")
+        }
+    }
+
     func testClipClockIsTheLoudestOriginalSampleAndWhereItWas() {
         // Input and Drive come after the measurement: the figure is the source's own level
         let (shared, dsp) = make([.oversampling: 0, .ceilingDB: -6, .inputDB: 6, .driveDB: 9])
