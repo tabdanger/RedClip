@@ -3,8 +3,9 @@
 // iOS 17+, SwiftUI. Opened from the preset name (Faceplate.swift) and the app's Samples key
 // (AppRootView.swift); hosted once per root, outside the scaled faceplate, by redClipPresetMenuHost.
 // One page at a time inside one panel: pinned header (Back / title / Close), a scrolling list,
-// and on the root page a pinned SETTINGS footer (Faceplate).
+// and on the root page a pinned SETTINGS footer (Faceplate, Self-Test).
 import SwiftUI
+import UIKit
 
 enum RCMenuAnchor: Hashable { case presets, samples }
 
@@ -13,6 +14,7 @@ enum RCMenuPage: Equatable {
     case bank(String)
     case samples
     case faceplates
+    case selfTest
 
     var title: String {
         switch self {
@@ -20,6 +22,7 @@ enum RCMenuPage: Equatable {
         case .bank(let name): return name
         case .samples: return "Samples"
         case .faceplates: return "Faceplate"
+        case .selfTest: return "Self-Test"
         }
     }
 }
@@ -220,10 +223,10 @@ private struct RCMenuPanel: View {
     private var presetQuery: String { presetSearch.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var sampleQuery: String { sampleSearch.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    /// Pinned header + pinned footer (two rows) + at least three usable rows; otherwise the footer
-    /// scrolls with the list as a deliberate fallback (short AUv3 views, very large text).
+    /// Pinned header + pinned footer (title + two rows) + at least three usable rows; otherwise the
+    /// footer scrolls with the list as a deliberate fallback (short AUv3 views, very large text).
     private var pinsFooter: Bool {
-        RCMenuInk.headerHeight + 12 + rowHeight * 0.7 + rowHeight * 5 <= panelHeight
+        RCMenuInk.headerHeight + 12 + rowHeight * 0.7 + rowHeight * 6 <= panelHeight
     }
 
     var body: some View {
@@ -347,6 +350,8 @@ private struct RCMenuPanel: View {
                                 face.faceplate = finish
                             }
                         }
+                    case .selfTest:
+                        RCSelfTestPage(runner: SelfTestRunner.shared, isPlugin: face.isPlugin)
                     }
                 }
             }
@@ -371,8 +376,15 @@ private struct RCMenuPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             sectionTitle("Settings")
             RCMenuRow(title: "Faceplate", icon: "paintbrush.pointed", chevron: true,
-                      separator: false, hint: face.faceplate.title) {
+                      hint: face.faceplate.title) {
                 navigate(.faceplates)
+            }
+            RCMenuRow(title: "Self-Test", icon: "checkmark.seal", chevron: true, separator: false,
+                      hint: "Checks the engine, presets and controls on a private copy. Your sound and settings are not touched.") {
+                // Runs on its own engine in the background (RedClipSelfTest.swift); the live
+                // audio and the current settings are never used.
+                SelfTestRunner.shared.start(isPlugin: face.isPlugin)
+                navigate(.selfTest)
             }
         }
         .background(RCMenuInk.surface)
@@ -481,16 +493,7 @@ private struct RCMenuPanel: View {
     }
 
     private func sectionTitle(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.footnote.weight(.medium))
-            .tracking(1.2)
-            .foregroundStyle(RCMenuInk.dim)
-            .padding(.horizontal, RCMenuInk.gutter)
-            .padding(.top, 14)
-            .padding(.bottom, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .bottom) { Rectangle().fill(RCMenuInk.separator).frame(height: 1) }
-            .accessibilityAddTraits(.isHeader)
+        RCMenuSectionTitle(text: text)
     }
 
     private func emptyMessage(_ title: String, detail: String) -> some View {
@@ -518,6 +521,119 @@ private struct RCMenuPanel: View {
         return Param.allCases.filter { $0 != .bypass }.allSatisfy { parameter in
             let expected = preset.values[parameter] ?? parameter.defaultValue
             return abs(params[parameter] - expected) < 0.0001
+        }
+    }
+}
+
+/// A small caps section label with a hairline under it.
+private struct RCMenuSectionTitle: View {
+    let text: String
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.footnote.weight(.medium))
+            .tracking(1.2)
+            .foregroundStyle(RCMenuInk.dim)
+            .padding(.horizontal, RCMenuInk.gutter)
+            .padding(.top, 14)
+            .padding(.bottom, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) { Rectangle().fill(RCMenuInk.separator).frame(height: 1) }
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+// MARK: - Self-Test page
+
+/// Settings › Self-Test: a spinner while the checks run, then PASSED / FAILED, how many checks
+/// ran, what failed in plain words, and Copy (to paste the result into a message).
+@MainActor
+private struct RCSelfTestPage: View {
+    @ObservedObject var runner: SelfTestRunner
+    let isPlugin: Bool
+    @State private var copied = false
+
+    private static let pass = Color(red: 0.46, green: 0.84, blue: 0.52)
+
+    var body: some View {
+        Group {
+            if let report = runner.report, !runner.running {
+                result(report)
+            } else {
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(RCMenuInk.text)
+                    Text("Running checks…")
+                        .font(.headline)
+                        .foregroundStyle(RCMenuInk.text)
+                    Text("Red Clip is testing a private copy of its engine. Your sound and settings are not touched.")
+                        .font(.subheadline)
+                        .foregroundStyle(RCMenuInk.dim)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, RCMenuInk.gutter)
+                .padding(.vertical, 36)
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .onAppear {
+            if !runner.running && runner.report == nil { runner.start(isPlugin: isPlugin) }
+        }
+    }
+
+    @ViewBuilder
+    private func result(_ report: SelfTestReport) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: report.passed ? "checkmark.seal.fill" : "xmark.octagon.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(report.passed ? Self.pass : RCMenuInk.accent)
+                .accessibilityHidden(true)
+            Text(report.passed ? "PASSED" : "FAILED")
+                .font(.system(size: 40, weight: .heavy))
+                .tracking(4)
+                .foregroundStyle(report.passed ? Self.pass : RCMenuInk.accent)
+            Text("\(report.checks) checks")
+                .font(.headline)
+                .foregroundStyle(RCMenuInk.text)
+            Text(report.passed ? "Everything checked out."
+                               : "\(report.failures.count) of \(report.checks) checks failed.")
+                .font(.subheadline)
+                .foregroundStyle(RCMenuInk.dim)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, RCMenuInk.gutter)
+        .padding(.vertical, 22)
+        .accessibilityElement(children: .combine)
+
+        if !report.failures.isEmpty {
+            RCMenuSectionTitle(text: "What failed")
+            ForEach(Array(report.failures.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.subheadline)
+                    .foregroundStyle(RCMenuInk.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, RCMenuInk.gutter)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(RCMenuInk.separator).frame(height: 1)
+                            .padding(.leading, RCMenuInk.gutter)
+                    }
+            }
+        }
+        RCMenuSectionTitle(text: "Result")
+        RCMenuRow(title: "Copy Result", icon: "doc.on.doc", detail: copied ? "Copied" : nil,
+                  hint: "Copies the result as text, ready to paste into a message") {
+            UIPasteboard.general.string = report.text
+            copied = true
+        }
+        RCMenuRow(title: "Run Again", icon: "arrow.clockwise", separator: false) {
+            copied = false
+            runner.start(isPlugin: isPlugin)
         }
     }
 }
