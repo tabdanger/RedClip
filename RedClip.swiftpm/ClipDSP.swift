@@ -58,15 +58,15 @@ enum Meter: Int {
 final class SharedState: @unchecked Sendable {
     static let waveColumns = 1024          // about 10 s of history at 100 columns per second
 
-    let params: AtomicFloats
-    let meters: AtomicFloats
-    let waveIn: AtomicFloats     // peak going INTO the clipper per column (after Input, Drive, Gold)
-    let waveOut: AtomicFloats    // output peak per column
-    let waveWrite: AtomicInt     // next column to write
-    let waveTotal: AtomicInt     // columns written so far (never wraps; the screen scrolls by it), published
-    let waveRate: AtomicFloat    // columns per second
-    let power: AtomicInt         // 0 = power button off (plug-in passes audio through untouched)
-    let loudnessReset: AtomicInt // UI sets 1 to restart the integrated LUFS readings; audio takes it
+    let params = AtomicFloats(count: Param.allCases.count)
+    let meters = AtomicFloats(count: Meter.count)
+    let waveIn = AtomicFloats(count: SharedState.waveColumns)   // peak going INTO the clipper per column (after Input, Drive, Gold)
+    let waveOut = AtomicFloats(count: SharedState.waveColumns)  // output peak per column
+    let waveWrite = AtomicInt(0)       // next column to write
+    let waveTotal = AtomicInt(0)       // columns written so far (never wraps; the screen scrolls by it), published
+    let waveRate = AtomicFloat(100)    // columns per second
+    let power = AtomicInt(1)           // 0 = power button off (plug-in passes audio through untouched)
+    let loudnessReset = AtomicInt(0)   // UI sets 1 to restart the integrated LUFS readings; audio takes it
     let clipClock = ClipClockState()   // biggest clip and where in the song it happened (ClipClock.swift)
     let wave = WaveFeed()              // the WAVEFORM screen's envelope history (WaveScreen.swift)
 
@@ -74,17 +74,17 @@ final class SharedState: @unchecked Sendable {
     // output into `capture` every 64 frames, stamped with the timeline position; the UI folds
     // those summaries into the song overview. The song clock is the audio's own position.
     let capture: CaptureRing
-    let captureOn: AtomicInt           // 1 = fill `capture` (plug-in); the app analyses the whole file instead
-    let songFrame: AtomicInt           // audio clock: source frame (app) or host sample position (plug-in)
-    let songMoving: AtomicInt          // 1 while that clock runs (playing)
-    let songTotal: AtomicInt           // frames in the loaded song; 0 = unknown (a DAW never says)
-    let songClock: AtomicInt           // SongClock raw value: where songFrame comes from
+    let captureOn = AtomicInt(0)       // 1 = fill `capture` (plug-in); the app analyses the whole file instead
+    let songFrame = AtomicInt(0)       // audio clock: source frame (app) or host sample position (plug-in)
+    let songMoving = AtomicInt(0)      // 1 while that clock runs (playing)
+    let songTotal = AtomicInt(0)       // frames in the loaded song; 0 = unknown (a DAW never says)
+    let songClock = AtomicInt(0)       // SongClock raw value: where songFrame comes from
     // CLIP CLOCK: the loudest sample of the ORIGINAL audio, before Input, Drive or anything
     // else, and where it is. Knobs never change or restart it. The app measures the whole file
     // when it loads and fixes it here (clipMaxFixed = 1); in a DAW the audio thread keeps the
     // loudest input sample since the reset as the host plays.
-    let clipMaxDB: AtomicFloat         // that peak in dBFS (meaningful only while clipMaxFrame >= 0)
-    let clipMaxReset: AtomicInt        // UI sets 1, the audio thread takes it
+    let clipMaxDB = AtomicFloat(0)     // that peak in dBFS (meaningful only while clipMaxFrame >= 0)
+    let clipMaxReset = AtomicInt(0)    // UI sets 1, the audio thread takes it
     let clipMaxFixed = AtomicInt(0)    // 1 = the app set it from the whole file; the audio thread leaves it
     // where that sample is: its position on the timeline it came from (SongClock in
     // clipMaxClock; -1 = none yet). clipMaxSerial is published last, after the three values,
@@ -92,7 +92,7 @@ final class SharedState: @unchecked Sendable {
     let clipMaxFrame = AtomicInt(-1)
     let clipMaxClock = AtomicInt(0)
     let clipMaxSerial = AtomicInt(0)
-    let songEpoch: AtomicInt           // bumped when the song starts over (plug-in: new render session)
+    let songEpoch = AtomicInt(0)       // bumped when the song starts over (plug-in: new render session)
 
     // Sample rings for the screen (oscilloscope) and the LED meters. The audio thread writes one
     // value per sample into each; the UI copies the newest stretch at display rate.
@@ -101,53 +101,31 @@ final class SharedState: @unchecked Sendable {
     // The screen (ScopeReader reads these). All four are lined up in time with scopeOut: the
     // oversampling filters delay the output a few samples, so the earlier signals are written
     // that many slots ahead (ClipDSP.process).
-    let scopeIn: AtomicFloats          // the original input, before any control, (L+R) / 2
-    let scopeOut: AtomicFloats         // the final output (after Mix, Output, Bypass), (L+R) / 2
-    let clipIn: AtomicFloats           // into the clipper, from the channel hitting it harder
-    let clipOut: AtomicFloats          // out of the clipper (same channel, before Fire)
-    let scopeClearedAt: AtomicInt      // ringTotal when playback stopped: older samples draw as silence
-    let meterInL: AtomicFloats         // after the Input knob
-    let meterInR: AtomicFloats
-    let meterOutL: AtomicFloats        // final output
-    let meterOutR: AtomicFloats
-    let ringTotal: AtomicInt           // samples written so far, published once per block
-    let sampleRate: AtomicFloat
+    let scopeIn = AtomicFloats(count: SharedState.ringSize)    // the original input, before any control, (L+R) / 2
+    let scopeOut = AtomicFloats(count: SharedState.ringSize)   // the final output (after Mix, Output, Bypass), (L+R) / 2
+    let clipIn = AtomicFloats(count: SharedState.ringSize)     // into the clipper, from the channel hitting it harder
+    let clipOut = AtomicFloats(count: SharedState.ringSize)    // out of the clipper (same channel, before Fire)
+    let scopeClearedAt = AtomicInt(0)  // ringTotal when playback stopped: older samples draw as silence
+    let meterInL = AtomicFloats(count: SharedState.ringSize)   // after the Input knob
+    let meterInR = AtomicFloats(count: SharedState.ringSize)
+    let meterOutL = AtomicFloats(count: SharedState.ringSize)  // final output
+    let meterOutR = AtomicFloats(count: SharedState.ringSize)
+    let ringTotal = AtomicInt(0)       // samples written so far, published once per block
+    let sampleRate = AtomicFloat(48_000)
 
     init(captureCapacity: Int = CaptureRing.defaultCapacity) {
         capture = CaptureRing(capacity: captureCapacity)
-        captureOn = AtomicInt(0)
-        songFrame = AtomicInt(0); songMoving = AtomicInt(0); songTotal = AtomicInt(0); songClock = AtomicInt(0)
-        clipMaxDB = AtomicFloat(0); clipMaxReset = AtomicInt(0); songEpoch = AtomicInt(0)
-        params = AtomicFloats(count: Param.allCases.count)
         for p in Param.allCases { params[p.rawValue] = p.defaultValue }
-        meters = AtomicFloats(count: Meter.count)
         for m in [Meter.inLUFS, .outLUFS, .inLUFSM, .outLUFSM, .inLUFSI, .outLUFSI] { meters[m.rawValue] = -70 }
-        waveIn = AtomicFloats(count: SharedState.waveColumns)
-        waveOut = AtomicFloats(count: SharedState.waveColumns)
-        waveWrite = AtomicInt(0)
-        waveTotal = AtomicInt(0)
-        waveRate = AtomicFloat(100)
-        power = AtomicInt(1)
-        loudnessReset = AtomicInt(0)
-        scopeIn = AtomicFloats(count: SharedState.ringSize); scopeOut = AtomicFloats(count: SharedState.ringSize)
-        clipIn = AtomicFloats(count: SharedState.ringSize); clipOut = AtomicFloats(count: SharedState.ringSize)
-        scopeClearedAt = AtomicInt(0)
-        meterInL = AtomicFloats(count: SharedState.ringSize); meterInR = AtomicFloats(count: SharedState.ringSize)
-        meterOutL = AtomicFloats(count: SharedState.ringSize); meterOutR = AtomicFloats(count: SharedState.ringSize)
-        ringTotal = AtomicInt(0)
-        sampleRate = AtomicFloat(48_000)
     }
 
     deinit {
-        params.deallocate(); meters.deallocate()
-        waveIn.deallocate(); waveOut.deallocate()
-        waveWrite.deallocate(); waveTotal.deallocate(); waveRate.deallocate(); power.deallocate(); loudnessReset.deallocate()
-        for p in [scopeIn, scopeOut, clipIn, clipOut, meterInL, meterInR, meterOutL, meterOutR] { p.deallocate() }
-        scopeClearedAt.deallocate()
-        ringTotal.deallocate(); sampleRate.deallocate()
-        captureOn.deallocate(); songFrame.deallocate(); songMoving.deallocate(); songTotal.deallocate()
-        songClock.deallocate(); clipMaxDB.deallocate(); clipMaxReset.deallocate(); songEpoch.deallocate()
-        clipMaxFrame.deallocate(); clipMaxClock.deallocate(); clipMaxSerial.deallocate(); clipMaxFixed.deallocate()
+        for a in [params, meters, waveIn, waveOut, scopeIn, scopeOut, clipIn, clipOut,
+                  meterInL, meterInR, meterOutL, meterOutR] { a.deallocate() }
+        for a in [waveWrite, waveTotal, power, loudnessReset, scopeClearedAt, ringTotal, captureOn,
+                  songFrame, songMoving, songTotal, songClock, clipMaxReset, songEpoch,
+                  clipMaxFrame, clipMaxClock, clipMaxSerial, clipMaxFixed] { a.deallocate() }
+        waveRate.deallocate(); sampleRate.deallocate(); clipMaxDB.deallocate()
     }
 
     /// CLIP CLOCK reset (any thread, used in a DAW): the readout clears now, the audio thread
@@ -214,20 +192,6 @@ struct Biquad {
     mutating func reset() { z1 = 0; z2 = 0 }
 
     // RBJ cookbook designs (computed in Double, stored as Float)
-    static func lowpass(fs: Double, f: Double, q: Double) -> Biquad {
-        let w = 2 * Double.pi * f / fs, c = cos(w), al = sin(w) / (2 * q)
-        let a0 = 1 + al
-        return Biquad(b0: Float((1 - c) / 2 / a0), b1: Float((1 - c) / a0), b2: Float((1 - c) / 2 / a0),
-                      a1: Float(-2 * c / a0), a2: Float((1 - al) / a0))
-    }
-
-    static func highpass(fs: Double, f: Double, q: Double) -> Biquad {
-        let w = 2 * Double.pi * f / fs, c = cos(w), al = sin(w) / (2 * q)
-        let a0 = 1 + al
-        return Biquad(b0: Float((1 + c) / 2 / a0), b1: Float(-(1 + c) / a0), b2: Float((1 + c) / 2 / a0),
-                      a1: Float(-2 * c / a0), a2: Float((1 - al) / a0))
-    }
-
     static func highShelf(fs: Double, f: Double, gainDB: Double, q: Double) -> Biquad {
         let A = pow(10, gainDB / 40), w = 2 * Double.pi * f / fs, c = cos(w), s = sin(w)
         let al = s / (2 * q), sq = 2 * sqrt(A) * al
@@ -248,7 +212,7 @@ struct Biquad {
 }
 
 /// Elliptic anti-imaging / anti-aliasing low-pass (0.05 dB ripple to 0.4375 x base rate,
-/// 90 dB down at the base Nyquist), 6 sections per oversampling factor. The coefficients
+/// 90 dB down at the base Nyquist), 6 sections per oversampling factor (2x, then 4x). The coefficients
 /// depend only on the ratio between rates, so they hold for 44.1, 48, 96 kHz alike.
 private let maxStages = 6
 private let ellipticSOS: [Biquad] = [
@@ -266,13 +230,6 @@ private let ellipticSOS: [Biquad] = [
     Biquad(b0: 1, b1: -1.3231558590766284, b2: 1, a1: -1.5156105520461611, a2: 0.88708122417029889),
     Biquad(b0: 1, b1: -1.4092857059469537, b2: 1.0000000000000002, a1: -1.5161907136151218, a2: 0.94531716787371833),
     Biquad(b0: 1, b1: -1.4407755324826823, b2: 0.99999999999999989, a1: -1.5261531579549696, a2: 0.98384787562341824),
-    // 8x
-    Biquad(b0: 6.0141742037010795e-05, b1: 6.2268936964080645e-06, b2: 6.0141742037010795e-05, a1: -1.7673994972320051, a2: 0.78495025569205523),
-    Biquad(b0: 1, b1: -1.4963821701509792, b2: 1, a1: -1.7895738092321376, a2: 0.83137658562809091),
-    Biquad(b0: 1, b1: -1.7459566505988029, b2: 0.99999999999999989, a1: -1.8183900683499417, a2: 0.89123368869741482),
-    Biquad(b0: 1, b1: -1.8171624459562543, b2: 1, a1: -1.8420708820589013, a2: 0.939148839841212),
-    Biquad(b0: 1, b1: -1.8433914394211748, b2: 0.99999999999999956, a1: -1.8590089081108239, a2: 0.97066132794662852),
-    Biquad(b0: 1, b1: -1.852739501560448, b2: 1, a1: -1.8728758396166278, a2: 0.99137654526740004),
 ]
 
 // MARK: - Shaping curves (also used by the UI transfer display)
@@ -474,8 +431,7 @@ final class ClipDSP: @unchecked Sendable {
     let shared: SharedState
 
     private let ch = [Channel(), Channel()]
-    private let osCoeffs = UnsafeMutablePointer<Biquad>.allocate(capacity: 4 * maxStages)  // per factor 1,2,4,8
-    private var alchCoef: (Float, Float, Float, Float) = (0, 0, 0, 0)
+    private let osCoeffs = UnsafeMutablePointer<Biquad>.allocate(capacity: 3 * maxStages)  // per factor 1, 2, 4
     private var curOS = -1
     private var curBox = -1
 
@@ -501,8 +457,7 @@ final class ClipDSP: @unchecked Sendable {
     /// of it is the CLIP readout. Red comes before it and Broil, Fire, Wet / Dry and Output after,
     /// so none of those change it.
     private var clipOver: Float = 1
-    private var clipBest: Float = 0   // CLIP CLOCK (dBFS of the original input) since the last reset
-    private var clipBestRatio: Float = 0                // the same, as a sample magnitude
+    private var clipBestRatio: Float = 0                // CLIP CLOCK: the original input's loudest |sample| since the last reset
     private var clipBestFrame = -1, clipBestClock = 0   // where it happened
     private var clipSerial = 0
     /// Largest |pre| / |post| of the current frame (both channels, every oversampled sample).
@@ -563,17 +518,14 @@ final class ClipDSP: @unchecked Sendable {
         shared.sampleRate.value = Float(sampleRate)
         inDelay.initialize(repeating: 0, count: 8)
         overDelay.initialize(repeating: 1, count: 8)
-        shared.waveRate.value = Float(sampleRate / Double(max(1, Int((sampleRate / 100).rounded()))))
+        shared.waveRate.value = Float(sampleRate / Double(colSamples))
 
-        var a: [Float] = []
-        for (i, factor) in [1, 2, 4, 8].enumerated() {
-            let fsOS = sampleRate * Double(factor)
+        // 1x: no filtering (pass-through sections); 2x and 4x: the elliptic sections
+        for i in 0..<3 {
             for s in 0..<maxStages {
                 osCoeffs[i * maxStages + s] = i == 0 ? Biquad() : ellipticSOS[(i - 1) * maxStages + s]
             }
-            a.append(Float(exp(-2 * Double.pi * 4000 / fsOS)))
         }
-        alchCoef = (a[0], a[1], a[2], a[3])
 
         // K-weighting (BS.1770-4 pre-filter + RLB high-pass), exact for this sample rate
         let shelf = KWeighting.preFilter(fs: sampleRate)
@@ -623,18 +575,29 @@ final class ClipDSP: @unchecked Sendable {
         }
     }
 
+    // How far the oversampling filters delay each stage, to the nearest frame, per Oversampling
+    // index (0 / 1 / 2 = 1x / 2x / 4x). The up-sampling filter puts the clip stage behind the
+    // input, the down-sampling filter puts the output a further 2 frames behind the clip stage.
+
+    /// Frames the clip stage trails the original input.
+    @inline(__always) static func clipLag(_ osIdx: Int) -> Int { osIdx == 0 ? 0 : (osIdx == 1 ? 2 : 3) }
+    /// Frames the output trails the original input (when not bypassed).
+    @inline(__always) static func outputLag(_ osIdx: Int) -> Int { osIdx == 0 ? 0 : (osIdx == 1 ? 4 : 5) }
+    /// Frames the output trails the clip stage.
+    @inline(__always) static func clipToOutputLag(_ osIdx: Int) -> Int { osIdx == 0 ? 0 : 2 }
+
+    /// How many frames the output trails the input at an Oversampling setting, not bypassed
+    /// (the offset the exporter trims so its file lines up with the original).
+    static func latencyFrames(oversampling: Float) -> Int {
+        outputLag(Int(oversampling.rounded()).clamped(0, 2))
+    }
+
     /// Process one block. Inputs may alias each other (mono files pass the same pointer twice).
     /// `gliding` has one bit per Param (bit = rawValue) for controls the host is ramping right
     /// now. Those move in a straight line from where they are to this block's target, sample by
     /// sample, landing on it at the block's last sample (the render cuts ramps into short
     /// blocks), so the host's ramp comes through with its exact shape and length, no lag.
     /// Everything else uses the 15 ms smoother, which keeps knob moves click-free.
-    /// How many frames the output trails the input at an Oversampling setting (0 / 1 / 2 =
-    /// 1x / 2x / 4x), not bypassed: the oversampling filters' delay to the nearest frame.
-    static func latencyFrames(oversampling: Float) -> Int {
-        [0, 4, 5][Int(oversampling.rounded()).clamped(0, 2)]
-    }
-
     func process(inL: UnsafePointer<Float>, inR: UnsafePointer<Float>,
                  outL: UnsafeMutablePointer<Float>, outR: UnsafeMutablePointer<Float>, frames: Int,
                  gliding: UInt32 = 0) {
@@ -646,13 +609,8 @@ final class ClipDSP: @unchecked Sendable {
 
         let factor = 1 << osIdx
         let fFactor = Float(factor)
-        let aCoef: Float
-        switch osIdx {
-        case 0: aCoef = alchCoef.0
-        case 1: aCoef = alchCoef.1
-        case 2: aCoef = alchCoef.2
-        default: aCoef = alchCoef.3
-        }
+        // Alchemy's 4 kHz one-pole split at the oversampled rate
+        let aCoef = Float(exp(-2 * Double.pi * 4000 / (sampleRate * Double(factor))))
         let knee = Curves.knee(Int(p[Param.clipMode.rawValue].rounded()))
         let goldClassic = p[Param.goldMode.rawValue] > 0.5
         let unity = p[Param.unity.rawValue] > 0.5
@@ -669,6 +627,11 @@ final class ClipDSP: @unchecked Sendable {
         let levels = ClipDSP.mixLevels(p)
         let tWet = levels.wet, tDry = levels.dry
         let tBypass: Float = p[Param.bypass.rawValue] > 0.5 ? 1 : 0
+        // stage delays (see clipLag); fully bypassed, the output is the input itself
+        let clipLag = ClipDSP.clipLag(osIdx)
+        let outLag = ClipDSP.outputLag(osIdx)
+        let outLagNow = tBypass > 0.5 ? 0 : outLag
+        let clipToOut = ClipDSP.clipToOutputLag(osIdx)
 
         if shared.loudnessReset.value != 0, shared.loudnessReset.exchange(0) != 0 {
             loudIn.reset(); loudOut.reset()
@@ -689,7 +652,7 @@ final class ClipDSP: @unchecked Sendable {
         let fixedFrame = fileMax ? shared.clipMaxFrame.value : -1
         let resetAsked = shared.clipMaxReset.value != 0 && shared.clipMaxReset.exchange(0) != 0
         if resetAsked && !fileMax {
-            clipBest = 0; clipBestRatio = 0; clipBestFrame = -1
+            clipBestRatio = 0; clipBestFrame = -1
             markAt = -1
             clipSerial &+= 1
             shared.clipMaxDB.value = 0
@@ -702,9 +665,7 @@ final class ClipDSP: @unchecked Sendable {
         // figures the scope rings use below), so each layer lands where its audio came from
         capturing = timelineFrame >= 0 && shared.captureOn.value != 0
         if capturing {
-            let clipDelay = factor == 1 ? 0 : (factor == 2 ? 2 : 3)
-            let outDelay = factor == 1 || tBypass > 0.5 ? 0 : (factor == 2 ? 4 : 5)
-            tickDelays = clipDelay | outDelay << 8
+            tickDelays = clipLag | outLagNow << 8
             tickStamp = SongStamp.of(p)
         }
 
@@ -712,15 +673,15 @@ final class ClipDSP: @unchecked Sendable {
         clipOver = 1
         // per control: ramping -> fixed step per sample to the target; otherwise -> 0 (smoother)
         let per = 1 / Float(max(frames, 1))
+        @inline(__always) func ramps(_ q: Param) -> Bool { gliding & (1 << UInt32(q.rawValue)) != 0 }
         @inline(__always) func step(_ q: Param, _ target: Float, _ now: Float) -> Float {
-            gliding & (1 << UInt32(q.rawValue)) != 0 ? (target - now) * per : 0
+            ramps(q) ? (target - now) * per : 0
         }
         let dIn = step(.inputDB, tIn, sIn), dOut = step(.outputDB, tOut, sOut)
         let dDrive = step(.driveDB, tDrive, sDrive)
         let dWet = step(levels.wetParam, tWet, sWet), dDry = step(levels.dryParam, tDry, sDry)
         let dCeil = step(.ceilingDB, tCeil, sCeil), dGold = step(.gold, tGold, sGold)
         let dAlch = step(.alchemy, tAlch, sAlch), dBroil = step(.broil, tBroil, sBroil)
-        @inline(__always) func ramps(_ q: Param) -> Bool { gliding & (1 << UInt32(q.rawValue)) != 0 }
         let gIn = ramps(.inputDB), gOut = ramps(.outputDB), gDrive = ramps(.driveDB)
         let gWet = ramps(levels.wetParam), gDry = ramps(levels.dryParam)
         let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy), gBroil = ramps(.broil)
@@ -734,8 +695,7 @@ final class ClipDSP: @unchecked Sendable {
         // overDelay) to line up with the output. The audio is not delayed.
         let feed = shared.wave
         let tapOn = feed.on.value != 0
-        let tapDelay = factor == 1 || tBypass > 0.5 ? 0 : (factor == 2 ? 4 : 5)
-        let overLag = factor == 1 ? 0 : 2
+        let tapDelay = outLagNow
         let onTimeline = timelineFrame >= 0
 
         for n in 0..<frames {
@@ -785,7 +745,7 @@ final class ClipDSP: @unchecked Sendable {
                 // --- oversampled nonlinear section ---
                 var wet: Float = 0, ref: Float = 0
                 if factor == 1 {
-                    wet = shape(xd, s, c, knee, goldClassic, aCoef)
+                    wet = shape(xd, s, c, knee, aCoef)
                     if abs(lastPre) >= abs(bigPre) { bigPre = lastPre; bigPost = lastPost }
                     ref = x
                 } else {
@@ -793,7 +753,7 @@ final class ClipDSP: @unchecked Sendable {
                         var u: Float = j == 0 ? xd * fFactor : 0
                         var r: Float = j == 0 ? x * fFactor : 0
                         for i in 0..<maxStages { u = s.upW[i].process(u); r = s.upR[i].process(r) }
-                        var w = shape(u, s, c, knee, goldClassic, aCoef)
+                        var w = shape(u, s, c, knee, aCoef)
                         if j == 0 && abs(lastPre) >= abs(bigPre) { bigPre = lastPre; bigPost = lastPost }
                         for i in 0..<maxStages { w = s.dnW[i].process(w); r = s.dnR[i].process(r) }
                         if j == 0 { wet = w; ref = r }
@@ -854,7 +814,7 @@ final class ClipDSP: @unchecked Sendable {
                 inDelay[slot] = max(abs(raws.0), abs(raws.1))
                 overDelay[slot] = frameOver
                 let inMag = inDelay[(processed &- tapDelay) & 7]
-                let over = overDelay[(processed &- overLag) & 7]
+                let over = overDelay[(processed &- clipToOut) & 7]
                 if waveFrames == 0 {
                     // where the output's first frame came from on the timeline (or the analysis clock)
                     waveFrame = onTimeline ? timelineFrame + n - tapDelay : processed - tapDelay
@@ -887,8 +847,8 @@ final class ClipDSP: @unchecked Sendable {
             // output. Fully bypassed, the output is the input itself, so no offset.
             let total = ringPos
             let slot = total & SharedState.ringMask
-            let inAhead = factor == 1 || sBypass > 0.5 ? 0 : (factor == 2 ? 4 : 5)
-            let clipAhead = factor == 1 ? 0 : 2
+            let inAhead = sBypass > 0.5 ? 0 : outLag
+            let clipAhead = clipToOut
             shared.scopeIn[(total + inAhead) & SharedState.ringMask] = (raws.0 + raws.1) * 0.5
             shared.clipIn[(total + clipAhead) & SharedState.ringMask] = bigPre
             shared.clipOut[(total + clipAhead) & SharedState.ringMask] = bigPost
@@ -896,7 +856,6 @@ final class ClipDSP: @unchecked Sendable {
             shared.meterInL[slot] = xs.0; shared.meterInR[slot] = xs.1
             shared.meterOutL[slot] = outs.0; shared.meterOutR[slot] = outs.1
             ringPos = total &+ 1
-
 
             // loudness: 100 ms blocks into the BS.1770 meters
             accIn += Double(kIn); accOut += Double(kOut)
@@ -943,8 +902,7 @@ final class ClipDSP: @unchecked Sendable {
         let blockDB = gainToDB(clipOver)
         m.storeMax(Meter.reductionDB.rawValue, blockDB)
         if newMax {
-            clipBest = gainToDB(clipBestRatio)
-            shared.clipMaxDB.value = clipBest
+            shared.clipMaxDB.value = gainToDB(clipBestRatio)
             shared.clipMaxFrame.value = clipBestFrame
             shared.clipMaxClock.value = clipBestClock
             shared.clipMaxSerial.publish(clipSerial)     // last: the set is complete
@@ -960,7 +918,7 @@ final class ClipDSP: @unchecked Sendable {
 
     /// Red (Gold processing) -> clipper -> Broil -> Alchemy, at the oversampled rate.
     @inline(__always) private func shape(_ x: Float, _ s: Channel, _ c: Float, _ knee: Float,
-                                         _ goldClassic: Bool, _ aCoef: Float) -> Float {
+                                         _ aCoef: Float) -> Float {
         var y = x
         if goldOn { y = Curves.red(y, ceiling: c, g: goldG, k: goldK) }
         let a = abs(y)

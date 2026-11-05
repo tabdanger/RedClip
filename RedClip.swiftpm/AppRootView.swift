@@ -123,20 +123,4 @@ struct AppRootView: View {
         .rcMenuAnchor(.samples, face: face)
         .accessibilityLabel("Open samples menu")
     }
-
-    private func stripButton(_ icon: String, _ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { stripLabel(icon, title) }.buttonStyle(.plain)
-    }
-
-    private func stripLabel(_ icon: String, _ title: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-            Text(title.uppercased()).tracking(1.5)
-        }
-        .font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(Theme.text)
-        .padding(.horizontal, 18)
-        .frame(height: 52)
-        .well(radius: 9)
-    }
 }

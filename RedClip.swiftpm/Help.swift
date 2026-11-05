@@ -311,26 +311,3 @@ struct HelpBubble: View {
         return 52 + CGFloat(lines) * 23
     }
 }
-
-/// The "?" key in the header: lit while help bubbles are on.
-struct HelpButton: View {
-    @ObservedObject var face: FaceModel
-
-    var body: some View {
-        Button {
-            face.helpEnabled.toggle()
-            if face.helpEnabled { face.showHelp(.help) }
-        } label: {
-            Text("?")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(face.helpEnabled ? Theme.glow : Theme.text.opacity(0.9))
-                .shadow(color: face.helpEnabled ? Theme.glow : .clear, radius: 6)
-                .frame(width: 62, height: 54)
-                .well(radius: 9, lit: face.helpEnabled)
-        }
-        .buttonStyle(.plain)
-        .anchorPreference(key: HelpAnchorKey.self, value: .bounds) { [.help: [$0]] }
-        .accessibilityLabel("Help bubbles")
-        .accessibilityValue(face.helpEnabled ? "On" : "Off")
-    }
-}

@@ -183,7 +183,6 @@ final class SongOverview: @unchecked Sendable {
 
     /// Frames the bins cover now.
     var extent: Int { framesPerBin * Self.binCount }
-    var hasSource: Bool { srcKnown.contains(true) }
 
     // MARK: Filling
 

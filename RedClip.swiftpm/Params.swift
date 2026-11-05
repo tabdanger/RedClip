@@ -140,14 +140,6 @@ final class ParamStore: ObservableObject {
 
     // MARK: Host (AUv3)
 
-    /// A value the host set (automation, a host preset). The audio side already has it.
-    func applyFromHost(_ p: Param, _ v: Float) {
-        let v = clamp(p, v)
-        guard values[p.rawValue] != v else { return }
-        values[p.rawValue] = v
-        shared[p] = v
-    }
-
     /// Restores a saved state (host project) without adding an undo step.
     func restore(_ v: [Float]) {
         guard v.count == Param.allCases.count else { return }

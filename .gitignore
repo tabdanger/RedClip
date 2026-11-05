@@ -3,3 +3,4 @@ __MACOSX/
 *.xcuserstate
 xcuserdata/
 .build/
+__pycache__/

@@ -2,9 +2,11 @@ import SwiftUI
 
 // MARK: - Clip Clock
 //
-// Superseded: the CLIP CLOCK readout on the WAVEFORM screen (SharedState.clipMax) now shows the
-// original audio's loudest sample and where it is, before any control. This older panel and its
-// state are no longer shown anywhere; ClipDSP still fills ClipClockState from songTime in a DAW.
+// The CLIP CLOCK readout on the WAVEFORM screen (SharedState.clipMax) shows the original audio's
+// loudest sample and where it is, before any control. ClipClockState below is the older
+// biggest-clip-and-when record; nothing on screen shows it any more, but ClipDSP still fills it
+// from songTime and the Self-Test checks it. This file also holds the scrub bar's loudest-moment
+// marks (ClipPoint) and arithmetic (ScrubMath).
 
 /// One of a file's loudest moments, for the scrub bar's highlights.
 struct ClipPoint: Identifiable, Equatable {
@@ -90,72 +92,5 @@ final class ClipClockState: @unchecked Sendable {
 
     static func dbText(_ db: Float) -> String {
         db > 0.05 ? String(format: "%.1f dB", db) : "-- dB"
-    }
-}
-
-/// The Clip Clock panel, drawn on the screen's glass in the screen's own units (258 high).
-struct ClipClockPanel: View {
-    let clock: ClipClockState
-    /// The app scans the file again; nil in a DAW, where reset starts a new live pass.
-    var onReset: (() -> Void)? = nil
-    @State private var dbText = ClipClockState.dbText(0)
-    @State private var timeText = ClipClockState.timeText(-1)
-
-    static let size = CGSize(width: 264, height: 66)
-    private static let label = Color(hex: 0x8a8d93)
-    private static let time = Color(hex: 0x8ea6ff)
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            column("MAX CLIP", dbText, color: Color(hex: 0xf1f1f3), width: 82)
-            column("MIN:SEC", timeText, color: Self.time, width: 92)
-            Button {
-                if let onReset { onReset() } else { clock.requestReset() }
-                refresh()
-            } label: {
-                Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Self.label)
-                    .frame(width: 30, height: 28)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x141518)))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Reset Clip Clock")
-        }
-        .padding(.horizontal, 12)
-        .frame(width: Self.size.width, height: Self.size.height)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(hex: 0x222326).opacity(0.94))
-                .shadow(color: .black.opacity(0.6), radius: 6, y: 3))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.05), lineWidth: 1))
-        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in refresh() }
-        .onAppear(perform: refresh)
-    }
-
-    private func column(_ title: String, _ value: String, color: Color, width: CGFloat) -> some View {
-        VStack(spacing: 5) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .tracking(1.2)
-                .foregroundStyle(Self.label)
-            Text(value)
-                .font(.system(size: 15, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(width: width, height: 28)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x141518)))
-        }
-    }
-
-    private func refresh() {
-        let busy = clock.scanning.value != 0
-        let d = busy ? "···" : ClipClockState.dbText(clock.maxDB.value)
-        let t = busy ? "···" : ClipClockState.timeText(clock.seconds.value)
-        if d != dbText { dbText = d }
-        if t != timeText { timeText = t }
     }
 }
