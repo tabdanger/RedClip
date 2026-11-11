@@ -55,9 +55,9 @@ struct PluginRootView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let layout = PlateLayout.current(face.faceplate)
-            let size = CGSize(width: layout.size.width, height: layout.pluginHeight)
-            let scale = min(geo.size.width / size.width, geo.size.height / size.height)
+            // the face that fits the host's window best, re-chosen whenever the window changes
+            let layout = PlateLayout.fitting(face.faceplate, in: geo.size, plugin: true)
+            let scale = layout.fitScale(in: geo.size, plugin: true)
             FaceplateView(face: face, params: face.params, layout: layout)
                 .helpBubbles(face, scale: layout.bubbleScale)
                 .scaleEffect(scale)

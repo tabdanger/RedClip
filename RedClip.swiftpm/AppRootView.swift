@@ -8,13 +8,13 @@ struct AppRootView: View {
     @ObservedObject var face: FaceModel
 
     /// The iPad and iPhone faces both have their transport built into the picture (the strip
-    /// branch below is for a face that doesn't). Same controls, same behaviour.
-    private var layout: PlateLayout { .current(face.faceplate) }
-
+    /// branch below is for a face that doesn't). Same controls, same behaviour. Which face shows
+    /// follows the window's shape, so the app resizes live (PlateLayout.fitting).
     var body: some View {
         GeometryReader { geo in
+            let layout = PlateLayout.fitting(face.faceplate, in: geo.size)
             let total = layout.canvas
-            let scale = min(geo.size.width / total.width, geo.size.height / total.height)
+            let scale = layout.fitScale(in: geo.size)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     FaceplateView(face: face, params: face.params, layout: layout)
@@ -23,7 +23,7 @@ struct AppRootView: View {
                             .frame(width: total.width, height: total.height - layout.size.height)
                     }
                 }
-                transport
+                TransportOverlay(audio: audio, face: face, layout: layout)
             }
             .frame(width: total.width, height: total.height, alignment: .topLeading)
             .helpBubbles(face, scale: layout.bubbleScale)
@@ -46,13 +46,22 @@ struct AppRootView: View {
             Text(audio.errorMessage ?? "")
         }
     }
+}
+
+/// The app's transport (Load / Play / Export): the picture's own buttons, with live labels on
+/// top, placed for whichever face the window is showing.
+@MainActor
+struct TransportOverlay: View {
+    @ObservedObject var audio: AudioController
+    @ObservedObject var face: FaceModel
+    let layout: PlateLayout
 
     // MARK: Transport (Load / Play / Export) — the picture's own buttons, with live labels on top.
     // Rectangles are canvas pixels from the layout.
 
     private var T: PlateLayout.Transport { layout.transport }
 
-    private var transport: some View {
+    var body: some View {
         ZStack(alignment: .topLeading) {
             // PLAY / PAUSE (spacebar too)
             Button { audio.togglePlay() } label: {

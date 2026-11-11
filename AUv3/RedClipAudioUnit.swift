@@ -92,6 +92,12 @@ public final class RedClipAudioUnit: AUAudioUnit {
     /// Mono in / mono out, or stereo in / stereo out.
     public override var channelCapabilities: [NSNumber]? { [1, 1, 2, 2] }
 
+    /// The face scales and picks its landscape or portrait art for any window, so every view
+    /// size a host offers (Logic's compact and expanded views, AUM's windows...) is supported.
+    public override func supportedViewConfigurations(_ availableViewConfigurations: [AUAudioUnitViewConfiguration]) -> IndexSet {
+        IndexSet(integersIn: 0..<availableViewConfigurations.count)
+    }
+
     public override var latency: TimeInterval { 0 }
     public override var tailTime: TimeInterval { 0 }
 

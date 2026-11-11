@@ -70,10 +70,29 @@ struct PlateLayout {
 
     /// Red and platinum pictures were drawn separately, so each has its own measured positions
     /// (on the iPhone the Wet / Dry / Output and Red / Fire / Broil rows are laid out differently).
+    /// The device's natural face, for before a window size is known.
     static func current(_ faceplate: Faceplate) -> PlateLayout {
         let platinum = faceplate == .face1Platinum
         if UIDevice.current.userInterfaceIdiom == .phone { return platinum ? .phonePlatinum : .phone }
         return platinum ? .padPlatinum : .pad
+    }
+
+    /// Dynamic resizing: the face that shows biggest in a window of `size` points (iPad Split
+    /// View, Slide Over, Stage Manager, a DAW's plug-in window, any rotation). Wide windows get
+    /// the landscape face, tall ones (taller than about 1.28 : 1) the portrait one; either is then
+    /// scaled to fit, so the art is never stretched or rearranged.
+    static func fitting(_ faceplate: Faceplate, in size: CGSize, plugin: Bool = false) -> PlateLayout {
+        let platinum = faceplate == .face1Platinum
+        let wide = platinum ? PlateLayout.padPlatinum : .pad
+        let tall = platinum ? PlateLayout.phonePlatinum : .phone
+        guard size.width > 0, size.height > 0 else { return current(faceplate) }
+        return tall.fitScale(in: size, plugin: plugin) > wide.fitScale(in: size, plugin: plugin) ? tall : wide
+    }
+
+    /// What this face is drawn at (points per picture pixel) to fit `size` without cropping.
+    func fitScale(in size: CGSize, plugin: Bool = false) -> CGFloat {
+        let shown = CGSize(width: canvas.width, height: plugin ? pluginHeight : canvas.height)
+        return min(size.width / shown.width, size.height / shown.height)
     }
 
     // MARK: iPad (1448 x 1086, full screen, transport built into the picture)
