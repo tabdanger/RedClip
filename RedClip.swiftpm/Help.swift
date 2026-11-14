@@ -101,7 +101,7 @@ enum HelpTopic: String, CaseIterable {
         case .unity:
             return "Takes the gain Red adds back off after all other processing. If Red adds 6 dB, the peaks come down 6 dB while the track keeps its perceived loudness, so you gain headroom without touching your transients."
         case .fire:
-            return "Smooths the bright, edgy top end that clipping can leave. It dips the highs by up to about 1 dB, only when the signal is close to the ceiling."
+            return "Smooths the bright, edgy top end that clipping can leave. It dips the highs by up to about 5 dB and adds up to 1 dB of low end, only when the signal is close to the ceiling. Even 10 % is clearly audible."
         case .broil:
             return "Instant compression with no attack or release, like the squeeze of tape saturation but without changing the tone. The body of the sound gets denser and louder while peaks and transients at the ceiling stay exactly where they are."
         case .boxTone:

@@ -345,6 +345,14 @@ enum Curves {
         c * tanh(a * x / c) * norm
     }
 
+    /// Fire at 100 %, at the ceiling: the band above about 4 kHz comes down by three quarters
+    /// (-12 dB; about -5 dB at 9 kHz on clipped material) and the band below comes up 12 %
+    /// (+1 dB). Both scale linearly with the knob and with the square of the level (a 20 ms
+    /// follower), so on clipped material 10 % is already -0.5 dB of top end and 20 % -1 dB.
+    /// (Was -1 dB / +0.3 dB at 100 % with no follower: about 0.1 dB at 9 kHz, inaudible below ~30 %.)
+    static let fireHighCut: Float = 0.75
+    static let fireLowLift: Float = 0.12
+
     /// Most gain each Gold style adds at 100 %: Modern 2.5 dB, Classic 6 dB.
     static func goldMaxDB(classic: Bool) -> Float { classic ? 6 : 2.5 }
 
@@ -480,6 +488,7 @@ private final class Channel {
     let upR = UnsafeMutablePointer<Biquad>.allocate(capacity: maxStages)
     let dnR = UnsafeMutablePointer<Biquad>.allocate(capacity: maxStages)
     var alchLP: Float = 0
+    var fireEnv: Float = 0          // Fire's level follower: instant up, 20 ms down (|signal| / ceiling)
     var box1 = Biquad(), box2 = Biquad()
     var kIn1 = Biquad(), kIn2 = Biquad(), kOut1 = Biquad(), kOut2 = Biquad()
 
@@ -493,6 +502,7 @@ private final class Channel {
             upW[i] = coeffs[i]; dnW[i] = coeffs[i]; upR[i] = coeffs[i]; dnR[i] = coeffs[i]
         }
         alchLP = 0
+        fireEnv = 0
     }
 }
 
@@ -521,6 +531,9 @@ final class ClipDSP: @unchecked Sendable {
     private var goldOn = false
     private var goldG: Float = 0, goldK: Float = 1   // Red's curve for this sample (Curves.redShape)
     private var unityGain: Float = 1                  // Unity: G dB off after everything else
+
+    // Fire's level follower release per oversampled sample (20 ms)
+    private var fireRelease: Float = 0
 
     // Broil (per base-rate sample, like Red): the curve's steepness and its 1 / tanh(steepness)
     private var broilOn = false
@@ -687,6 +700,7 @@ final class ClipDSP: @unchecked Sendable {
         let fFactor = Float(factor)
         // Alchemy's 4 kHz one-pole split at the oversampled rate
         let aCoef = Float(exp(-2 * Double.pi * 4000 / (sampleRate * Double(factor))))
+        fireRelease = Float(exp(-1 / (0.020 * sampleRate * Double(factor))))
         let knee = Curves.knee(Int(p[Param.clipMode.rawValue].rounded()))
         let goldClassic = p[Param.goldMode.rawValue] > 0.5
         let unity = p[Param.unity.rawValue] > 0.5
@@ -1019,13 +1033,18 @@ final class ClipDSP: @unchecked Sendable {
         }
         if broilOn { y = Curves.broil(y, ceiling: c, a: broilA, norm: broilNorm) }
 
-        // Alchemy: amplitude-dependent tilt around 4 kHz. Near the ceiling the highs dip up to
-        // about 1 dB and the lows lift slightly, softening the edge clipping leaves behind.
+        // Fire (Alchemy): level-dependent tilt around 4 kHz. Near the ceiling the highs dip
+        // (about 5 dB at 9 kHz at 100 %) and the lows lift up to 1 dB, softening the edge
+        // clipping leaves behind. The level comes from a follower (instant up, 20 ms down), so
+        // the tilt follows the music's level instead of every sample: a loud bass no longer
+        // pumps the highs back up.
         s.alchLP = y + aCoef * (s.alchLP - y)
+        let level = min(abs(y) / c, 1)
+        s.fireEnv = level >= s.fireEnv ? level : level + fireRelease * (s.fireEnv - level)
         if sAlch > 0.0001 {
             let lo = s.alchLP, hi = y - lo
-            let e = min(abs(y) / c, 1), e2 = e * e
-            y = lo * (1 + sAlch * 0.035 * e2) + hi * (1 - sAlch * 0.109 * e2)
+            let e = s.fireEnv, e2 = e * e
+            y = lo * (1 + sAlch * Curves.fireLowLift * e2) + hi * (1 - sAlch * Curves.fireHighCut * e2)
         }
         return y
     }

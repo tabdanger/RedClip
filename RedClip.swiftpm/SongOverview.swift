@@ -19,7 +19,7 @@ import Foundation
 // its loudest sample at every later point, and the model gives that sample's real values. The
 // picture follows a knob on the very next frame, for the whole song at once. What the model
 // leaves out is small and needs the full DSP: the oversampling filters (a little inter-sample
-// overshoot) and Fire and Box Tone (about 1 dB of top-end tilt at most). So:
+// overshoot), Fire (a top-end tilt near the ceiling, a few dB) and Box Tone (under 1 dB). So:
 //   - app: the loaded file's peaks come first (a fraction of a second), then SongAnalyzer runs
 //     the file through a private ClipDSP (its own SharedState, never the live one) once the
 //     controls have been still for a moment. Columns it has covered with the current settings
@@ -318,7 +318,7 @@ final class SongOverview: @unchecked Sendable {
 /// The DSP's sample-by-sample stages with one set of settings (ClipDSP.process's targets), for
 /// drawing the SONG layers live from the untouched input. Uses the very same curves (Curves), so
 /// the clipping it shows is the clip mode's real shape. Left out, because they need the filters:
-/// oversampling's inter-sample overshoot, Fire and Box Tone (each at most about 1 dB).
+/// oversampling's inter-sample overshoot, Fire (top-end tilt near the ceiling) and Box Tone.
 struct SongModel {
     let gIn: Float, gDrive: Float, gOut: Float, c: Float, knee: Float
     let redOn: Bool, redG: Float, redK: Float, unityGain: Float
