@@ -170,6 +170,4 @@ extension Param {
         default: return nil
         }
     }
-
-    var isDecibels: Bool { self == .inputDB || self == .driveDB || self == .ceilingDB || self == .outputDB }
 }

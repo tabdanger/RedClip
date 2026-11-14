@@ -267,8 +267,7 @@ public final class RedClipAudioUnit: AUAudioUnit {
             let i = min(max(Int(value.rounded()), 0), names.count - 1)
             return names[i]
         }
-        if p.isDecibels { return String(format: "%.1f dB", value) }
-        return String(format: "%.0f %%", value)
+        return p.readout(value)      // the same readout as the face: exactly what the engine uses
     }
 
     static func makeParameterTree() -> AUParameterTree {

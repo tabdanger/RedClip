@@ -38,6 +38,79 @@ enum Param: Int, CaseIterable {
     }
 }
 
+// MARK: - Knob tapers and readouts
+//
+// The one place that says how each knob turns and what it reads. The stored value (what presets,
+// saved projects and host automation hold, and what the engine gets) never changes meaning; a
+// knob turns in "knob units" and shows exactly the value the engine is using:
+//   - dB knobs (Input, Drive, Ceiling, Output) turn in dB, in 0.1 dB steps;
+//   - % knobs turn in whole % of their full effect. Red (dB of lift), Fire, Wet and Dry are already
+//     linear in their effect, so their knob units are the stored value. Broil's stored value is its
+//     curve's steepness, whose lift is far from linear (10 % gave 2 % of the lift), so its knob
+//     shows and turns in % of its full lift (BroilTaper).
+extension Param {
+    var isDecibels: Bool { self == .inputDB || self == .driveDB || self == .ceilingDB || self == .outputDB }
+
+    /// The knob's travel, in knob units.
+    var knobRange: ClosedRange<Float> { self == .broil ? 0...100 : range }
+
+    /// The smallest step a knob turn makes, in knob units.
+    var knobStep: Float { isDecibels ? 0.1 : 1 }
+
+    /// Stored value -> knob units.
+    func toKnob(_ v: Float) -> Float { self == .broil ? BroilTaper.percent(v) : v }
+
+    /// Knob units -> stored value.
+    func fromKnob(_ k: Float) -> Float { self == .broil ? BroilTaper.raw(percent: k) : k }
+
+    /// Snaps a knob position onto the knob's steps, inside its travel.
+    func snapKnob(_ k: Float) -> Float {
+        ((k / knobStep).rounded() * knobStep).clamped(knobRange.lowerBound, knobRange.upperBound)
+    }
+
+    /// The text under the knob (and in the host's automation lane) for a stored value: exactly
+    /// what the engine uses. Values a knob sets sit on its steps and read like "-6.3 dB" or
+    /// "23 %"; anything between steps (host automation, very old projects) gets one more decimal.
+    func readout(_ v: Float) -> String {
+        let k = toKnob(v)
+        let onStep = abs(k - snapKnob(k)) < knobStep * 0.01
+        if isDecibels {
+            let digits = onStep ? 1 : 2
+            let shown = (Double(k) * pow(10, Double(digits))).rounded() / pow(10, Double(digits)) + 0   // no "-0.0"
+            let signed = self == .inputDB || self == .outputDB
+            if signed && shown == 0 { return String(format: "%.\(digits)f dB", 0.0) }
+            return String(format: signed ? "%+.\(digits)f dB" : "%.\(digits)f dB", shown)
+        }
+        return String(format: onStep ? "%.0f %%" : "%.1f %%", k)
+    }
+}
+
+/// Broil's knob: % of its full lift. Broil lifts quiet material by a / tanh(a) (a = stored % / 100
+/// x Curves.broilMax): about +8.1 dB at 100 %. The knob reads that lift linearly, so 10 % is
+/// 10 % of the lift (0.8 dB) and 50 % is half (4.0 dB).
+enum BroilTaper {
+    /// Lift of quiet material, dB, for steepness a.
+    static func liftDB(_ a: Double) -> Double { a < 1e-7 ? 0 : 20 * log10(a / tanh(a)) }
+    static let fullLiftDB = liftDB(Double(Curves.broilMax))
+
+    /// Stored Broil (0...100, the curve's steepness) -> % of the full lift.
+    static func percent(_ raw: Float) -> Float {
+        let a = Double(raw.clamped(0, 100)) / 100 * Double(Curves.broilMax)
+        return Float(100 * liftDB(a) / fullLiftDB)
+    }
+
+    /// % of the full lift -> stored Broil. Off the audio thread (knob turns, host text).
+    static func raw(percent: Float) -> Float {
+        let want = Double(percent.clamped(0, 100)) / 100 * fullLiftDB
+        var lo = 0.0, hi = 100.0
+        for _ in 0..<64 {
+            let mid = (lo + hi) / 2
+            if liftDB(mid / 100 * Double(Curves.broilMax)) < want { lo = mid } else { hi = mid }
+        }
+        return Float((lo + hi) / 2)
+    }
+}
+
 enum Meter: Int {
     // inLUFS / outLUFS are short-term (3 s); M = momentary (400 ms), I = integrated (gated, since reset)
     // reductionDB: the most gain the clipping stage took off any one sample this block, in dB
@@ -441,7 +514,8 @@ final class ClipDSP: @unchecked Sendable {
     private var sCeil: Float = 1, sGold: Float = 0, sAlch: Float = 0, sBypass: Float = 0
     private var sBroil: Float = 0
     private var sUnity: Float = 0
-    private let smooth: Float          // 15 ms: knob moves and immediate automation, click-free
+    private let smooth: Float          // 1.25 ms: knob moves and immediate automation (95 % there in under 5 ms, click-free)
+    private let smoothSwitch: Float    // 15 ms: Bypass and Unity crossfades (switches, not knobs; unchanged)
 
     // Gold (per base-rate sample, shared by both channels and every oversampled sub-sample)
     private var goldOn = false
@@ -512,7 +586,8 @@ final class ClipDSP: @unchecked Sendable {
     init(sampleRate: Double, shared: SharedState) {
         self.sampleRate = sampleRate
         self.shared = shared
-        smooth = 1 - Float(exp(-1 / (0.015 * sampleRate)))
+        smooth = 1 - Float(exp(-1 / (0.00125 * sampleRate)))
+        smoothSwitch = 1 - Float(exp(-1 / (0.015 * sampleRate)))
         lufsBlock = max(1, Int((sampleRate / 10).rounded()))
         colSamples = max(1, Int((sampleRate / 100).rounded()))
         shared.sampleRate.value = Float(sampleRate)
@@ -597,7 +672,8 @@ final class ClipDSP: @unchecked Sendable {
     /// now. Those move in a straight line from where they are to this block's target, sample by
     /// sample, landing on it at the block's last sample (the render cuts ramps into short
     /// blocks), so the host's ramp comes through with its exact shape and length, no lag.
-    /// Everything else uses the 15 ms smoother, which keeps knob moves click-free.
+    /// Every other knob move uses the 1.25 ms smoother: the sound follows within about 5 ms with
+    /// no clicks. Bypass and Unity crossfade over 15 ms as before.
     func process(inL: UnsafePointer<Float>, inR: UnsafePointer<Float>,
                  outL: UnsafeMutablePointer<Float>, outR: UnsafeMutablePointer<Float>, frames: Int,
                  gliding: UInt32 = 0) {
@@ -685,7 +761,7 @@ final class ClipDSP: @unchecked Sendable {
         let gIn = ramps(.inputDB), gOut = ramps(.outputDB), gDrive = ramps(.driveDB)
         let gWet = ramps(levels.wetParam), gDry = ramps(levels.dryParam)
         let gCeil = ramps(.ceilingDB), gGold = ramps(.gold), gAlch = ramps(.alchemy), gBroil = ramps(.broil)
-        let ks = smooth
+        let ks = smooth, ksw = smoothSwitch
         var ringPos = shared.ringTotal.value          // only this thread writes it
         // WAVEFORM taps (WaveScreen.swift), gathered only while the screen shows them: the
         // original input, the clipper's gain reduction and the final output. The output comes
@@ -703,8 +779,8 @@ final class ClipDSP: @unchecked Sendable {
             sDrive += gDrive ? dDrive : ks * (tDrive - sDrive)
             sWet += gWet ? dWet : ks * (tWet - sWet); sDry += gDry ? dDry : ks * (tDry - sDry)
             sCeil += gCeil ? dCeil : ks * (tCeil - sCeil); sGold += gGold ? dGold : ks * (tGold - sGold)
-            sAlch += gAlch ? dAlch : ks * (tAlch - sAlch); sBypass += ks * (tBypass - sBypass)
-            sUnity += ks * (tUnity - sUnity)
+            sAlch += gAlch ? dAlch : ks * (tAlch - sAlch); sBypass += ksw * (tBypass - sBypass)
+            sUnity += ksw * (tUnity - sUnity)
             sBroil += gBroil ? dBroil : ks * (tBroil - sBroil)
             let c = sCeil
 

@@ -166,13 +166,17 @@ struct FaceplateView: View {
             ForEach(L.knobs.indices, id: \.self) { i in
                 let k = L.knobs[i]
                 let box = k.pointerTo * 1.55
-                let value = knobBinding(k.param)
-                PlateKnob(value: value, range: k.param.range, defaultValue: k.param.defaultValue,
+                let p = k.param
+                let stored = knobBinding(p)
+                // the knob turns in knob units (dB, or % of the full effect; see Param.toKnob)
+                let turn = Binding<Float>(get: { p.toKnob(stored.wrappedValue) },
+                                          set: { stored.wrappedValue = p.fromKnob($0) })
+                PlateKnob(value: turn, range: p.knobRange, defaultValue: p.toKnob(p.defaultValue), step: p.knobStep,
                           capRadius: k.pointerTo, pointerFrom: k.pointerFrom, pointerTo: k.pointerTo,
                           pointerWidth: k.pointerWidth, theme: theme)
                     .helpTarget(k.topic, face)
                     .place(x: k.center.x - box, y: k.center.y - box, w: box * 2, h: box * 2)
-                PlateValue(text: Self.valueText(k.param, value.wrappedValue), size: k.valueFont, theme: theme)
+                PlateValue(text: Self.valueText(p, stored.wrappedValue), size: k.valueFont, theme: theme)
                     .place(k.value)
             }
         }
@@ -188,13 +192,8 @@ struct FaceplateView: View {
         }
     }
 
-    static func valueText(_ p: Param, _ v: Float) -> String {
-        switch p {
-        case .inputDB, .outputDB: return Fmt.db(v)
-        case .driveDB, .ceilingDB: return Fmt.dbPlain(v)
-        default: return Fmt.pct(v)
-        }
-    }
+    /// The readout under a knob for a stored value: exactly what the engine uses (Param.readout).
+    static func valueText(_ p: Param, _ v: Float) -> String { p.readout(v) }
 
     // MARK: Red style / Linked-Unlinked / Box Tone / Clip Mode / Oversampling, Unity / Delta / Link / Bypass
 
@@ -291,6 +290,8 @@ struct PlateKnob: View {
     @Binding var value: Float
     let range: ClosedRange<Float>
     let defaultValue: Float
+    /// Every turn lands on a step, so the readout is always the exact value the engine gets.
+    var step: Float = 0
     let capRadius: CGFloat
     let pointerFrom: CGFloat
     let pointerTo: CGFloat
@@ -319,7 +320,10 @@ struct PlateKnob: View {
                     if dragStart == nil { dragStart = value }
                     // Tension: a full sweep takes 900 points of drag on every knob, big or small
                     let delta = Float(-g.translation.height + g.translation.width * 0.3) / 900 * span
-                    value = min(max((dragStart ?? value) + delta, range.lowerBound), range.upperBound)
+                    var v = (dragStart ?? value) + delta
+                    if step > 0 { v = (v / step).rounded() * step }
+                    v = min(max(v, range.lowerBound), range.upperBound)
+                    if v != value { value = v }
                 }
                 .onEnded { _ in dragStart = nil }
         )

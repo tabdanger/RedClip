@@ -67,7 +67,7 @@ final class ScopeTests: XCTestCase {
         let ceiling: Float = -6, c = pow(10, ceiling / 20)
         let h = try settled([.oversampling: 0, .clipMode: 0, .driveDB: 9, .ceilingDB: ceiling])
         let r = screen(h, columns: oneSamplePerColumn)
-        // the ceiling's 15 ms smoother settles within ~1e-4 of its target in Float (0.0004 dB)
+        // the ceiling's 1.25 ms smoother settles within ~1e-4 of its target in Float (0.0004 dB)
         let top = r.outMax.max()!
         XCTAssertEqual(top, c, accuracy: 1e-4, "hard clipping tops out at the ceiling")
         var flat = 0, cut = 0

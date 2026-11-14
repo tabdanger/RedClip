@@ -213,6 +213,35 @@ enum RedClipSelfTest {
         mixerChecks(&t)
         meterAndClipChecks(&t)
         screenAndLayoutChecks(&t)
+        knobChecks(&t)
+    }
+
+    // MARK: Knobs: readout = engine at every 1 %, even % knobs, 5 ms response (KnobTaperTests)
+
+    private static func knobChecks(_ t: inout SelfTestTally) {
+        for p in KnobAudit.knobs {
+            let name = KnobAudit.name(p)
+            let r = KnobAudit.audit(p)
+            t.check("\(name) knob readout, 1 to 100 %") {
+                let limit = p.isDecibels ? 0.01 : 0.1
+                if !(r.worstError <= limit) {
+                    return "at \(r.worstAt) % it shows \(r.worstText) but the engine does \(String(format: "%.3f", r.worstMeasured))"
+                }
+                return nil
+            }
+            if !p.isDecibels {
+                t.check("\(name) knob is even (no dead zone)") {
+                    r.worstEvenness <= 0.1 ? nil : "it is off by \(String(format: "%.2f", r.worstEvenness)) % of its full effect somewhere"
+                }
+            }
+        }
+        for (p, a, b) in [(Param.outputDB, Float(0), Float(-12)), (.inputDB, 6, 0), (.driveDB, 0, 12),
+                          (.ceilingDB, -12, 0), (.wet, 100, 0)] {
+            t.check("\(KnobAudit.name(p)) responds within 5 ms") {
+                let ms = KnobAudit.responseMS(p, from: a, to: b)
+                return ms <= 5 ? nil : "it took \(String(format: "%.1f", ms)) ms"
+            }
+        }
     }
 
     // MARK: One parameter map
